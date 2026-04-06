@@ -1,0 +1,344 @@
+"""
+DeployWithMe — FastAPI control server for the deployment agent.
+
+Exposes HTTP APIs so a React frontend can trigger deploys, poll status,
+confirm before going live, list/stop containers, and proxy test predictions.
+
+Run: uvicorn deployment_agent.api_server:app --host 0.0.0.0 --port 8080 --reload
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import tempfile
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+import requests
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from deployment_agent.docker_ops import docker_rmi_force, docker_rm_force, run_cmd
+
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="DeployWithMe Control API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+jobs: dict[str, dict[str, Any]] = {}
+_jobs_lock = threading.Lock()
+
+
+def _safe_filename(name: str | None) -> str:
+    if not name:
+        return "model.bin"
+    base = Path(name).name
+    base = re.sub(r"[^\w.\-]", "_", base)
+    if not base or base in {".", ".."}:
+        return "model.bin"
+    return base
+
+
+def _strip_internal(job: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in job.items() if not str(k).startswith("_")}
+
+
+def _docker_daemon_ok() -> bool:
+    code, _, _ = run_cmd(["docker", "info"])
+    return code == 0
+
+
+def _infer_host_port_from_inspect(data: dict[str, Any]) -> int | None:
+    ports = (data.get("NetworkSettings") or {}).get("Ports") or {}
+    for key, bindings in ports.items():
+        if "8000/tcp" in key and bindings:
+            try:
+                return int(bindings[0].get("HostPort", "0")) or None
+            except (ValueError, TypeError, IndexError):
+                pass
+    # fallback: parse 8000/tcp
+    b = ports.get("8000/tcp")
+    if b and isinstance(b, list) and b:
+        try:
+            return int(b[0].get("HostPort", "0")) or None
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _env_list_to_dict(env_list: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in env_list or []:
+        if "=" in item:
+            k, v = item.split("=", 1)
+            out[k] = v
+    return out
+
+
+@app.get("/api/health")
+def api_health() -> dict[str, str]:
+    return {"status": "ok", "docker": "running" if _docker_daemon_ok() else "not_running"}
+
+
+class ConfirmBody(BaseModel):
+    confirmed: bool = Field(..., description="True to run container, False to cancel")
+
+
+class TestPredictBody(BaseModel):
+    features: list[float]
+
+
+def _deployment_worker(job_id: str, model_path: str, requirements_path: str | None) -> None:
+    from deployment_agent.graph.workflow import run_deploy_run_and_health, run_deploy_until_build
+
+    with _jobs_lock:
+        job = jobs[job_id]
+
+    try:
+        with _jobs_lock:
+            job["status"] = "running"
+            job["progress"] = 10
+
+        build_t0 = time.time()
+        state = run_deploy_until_build(model_path, requirements_path)
+
+        with _jobs_lock:
+            job["decision_log"] = list(state.get("decision_log", []))
+            det = state.get("detection") or {}
+            job["framework"] = det.get("framework")
+            job["model_name"] = Path(model_path).name
+
+        if state.get("error"):
+            with _jobs_lock:
+                job["status"] = "failed"
+                job["error"] = str(state.get("error"))
+                job["progress"] = 100
+                job["last_build_log"] = state.get("last_build_log")
+            return
+
+        build_sec = int(time.time() - build_t0)
+        dockerfile_path = Path(state["build_dir"]) / "Dockerfile"
+        preview = ""
+        if dockerfile_path.is_file():
+            lines = dockerfile_path.read_text(encoding="utf-8").splitlines()[:10]
+            preview = "\n".join(lines)
+
+        with _jobs_lock:
+            job["confirmation_data"] = {
+                "image_tag": state.get("image_tag"),
+                "port": None,
+                "framework": job["framework"],
+                "model_name": job["model_name"],
+                "build_duration_seconds": build_sec,
+                "dockerfile_preview": preview,
+                "memory_limit": "container default (Docker)",
+            }
+            job["status"] = "awaiting_confirmation"
+            job["progress"] = 75
+            job["_deploy_state"] = state
+
+        ev: threading.Event = job["_confirm_event"]
+        ev.wait(timeout=3600)
+
+        with _jobs_lock:
+            confirmed = job.get("_user_confirmed")
+
+        if not confirmed:
+            with _jobs_lock:
+                job["status"] = "failed"
+                job["error"] = "Deployment cancelled by user."
+                job["progress"] = 100
+            if state.get("image_tag"):
+                docker_rmi_force(str(state["image_tag"]))
+            return
+
+        with _jobs_lock:
+            job["status"] = "running"
+            job["progress"] = 85
+
+        final = run_deploy_run_and_health(state)
+
+        with _jobs_lock:
+            job["decision_log"] = list(final.get("decision_log", job["decision_log"]))
+            if final.get("error"):
+                job["status"] = "failed"
+                job["error"] = str(final.get("error"))
+                job["api_url"] = None
+            else:
+                job["status"] = "success"
+                job["error"] = None
+                job["api_url"] = final.get("api_url")
+                if job.get("confirmation_data"):
+                    port = final.get("host_port")
+                    job["confirmation_data"] = dict(job["confirmation_data"])
+                    job["confirmation_data"]["port"] = port
+            job["progress"] = 100
+
+    except Exception as e:
+        logger.exception("Deployment worker failed: %s", e)
+        with _jobs_lock:
+            job = jobs.get(job_id)
+            if job:
+                job["status"] = "failed"
+                job["error"] = str(e)
+                job["progress"] = 100
+
+
+@app.post("/api/deploy")
+async def deploy(
+    model_file: UploadFile = File(...),
+    requirements_file: UploadFile | None = File(None),
+) -> dict[str, str]:
+    if not _docker_daemon_ok():
+        raise HTTPException(status_code=503, detail="Docker daemon is not reachable")
+
+    job_id = uuid.uuid4().hex[:8]
+    tmp = Path(tempfile.gettempdir()) / f"deploywithme_{job_id}"
+    tmp.mkdir(parents=True, exist_ok=True)
+
+    model_name = _safe_filename(model_file.filename)
+    model_path = tmp / model_name
+    content = await model_file.read()
+    model_path.write_bytes(content)
+
+    req_path: str | None = None
+    if requirements_file and requirements_file.filename:
+        rq_name = _safe_filename(requirements_file.filename)
+        rq = tmp / rq_name
+        rq.write_bytes(await requirements_file.read())
+        req_path = str(rq.resolve())
+
+    with _jobs_lock:
+        jobs[job_id] = {
+            "job_id": job_id,
+            "status": "started",
+            "progress": 0,
+            "framework": None,
+            "model_name": model_name,
+            "decision_log": [],
+            "confirmation_data": None,
+            "api_url": None,
+            "error": None,
+            "_confirm_event": threading.Event(),
+            "_user_confirmed": None,
+            "_deploy_state": None,
+            "_temp_dir": str(tmp),
+            "last_build_log": None,
+        }
+
+    # Run worker in thread so FastAPI returns immediately
+    t = threading.Thread(
+        target=_deployment_worker,
+        args=(job_id, str(model_path.resolve()), req_path),
+        daemon=True,
+    )
+    t.start()
+
+    return {"job_id": job_id, "status": "started"}
+
+
+@app.get("/api/status/{job_id}")
+def get_status(job_id: str) -> dict[str, Any]:
+    with _jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Unknown job_id")
+        return _strip_internal(job)
+
+
+@app.post("/api/confirm/{job_id}")
+def confirm(job_id: str, body: ConfirmBody) -> dict[str, str]:
+    with _jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Unknown job_id")
+        if job.get("status") != "awaiting_confirmation":
+            raise HTTPException(status_code=400, detail="Job is not awaiting confirmation")
+        job["_user_confirmed"] = bool(body.confirmed)
+        job["_confirm_event"].set()
+
+    if body.confirmed:
+        return {"status": "proceeding"}
+    return {"status": "cancelled"}
+
+
+@app.get("/api/deployments")
+def list_deployments() -> list[dict[str, Any]]:
+    code, so, _ = run_cmd(
+        ["docker", "ps", "--filter", "name=deploy_agent", "--format", "{{.Names}}"]
+    )
+    if code != 0:
+        return []
+
+    names = [n.strip() for n in (so or "").splitlines() if n.strip()]
+    result: list[dict[str, Any]] = []
+
+    for name in names:
+        c2, insp_raw, _ = run_cmd(["docker", "inspect", name])
+        if c2 != 0 or not insp_raw:
+            continue
+        try:
+            data = json.loads(insp_raw)[0]
+        except (json.JSONDecodeError, IndexError):
+            continue
+
+        port = _infer_host_port_from_inspect(data)
+        if not port:
+            continue
+
+        env = _env_list_to_dict((data.get("Config") or {}).get("Env") or [])
+        framework = env.get("DEPLOY_FRAMEWORK", "unknown")
+        model_name = env.get("DEPLOY_MODEL_NAME", name)
+
+        api_url = f"http://127.0.0.1:{port}"
+        running = (data.get("State") or {}).get("Running", False)
+
+        result.append(
+            {
+                "container_name": name,
+                "api_url": api_url,
+                "docs_url": f"{api_url}/docs",
+                "framework": framework,
+                "model_name": model_name,
+                "status": "running" if running else "stopped",
+                "port": port,
+            }
+        )
+
+    return result
+
+
+@app.delete("/api/deployments/{container_name:path}")
+def stop_deployment(container_name: str) -> dict[str, Any]:
+    if not container_name.startswith("deploy_agent_"):
+        raise HTTPException(status_code=400, detail="Invalid container name")
+    docker_rm_force(container_name)
+    return {"stopped": True, "container": container_name}
+
+
+@app.post("/api/test-predict/{port}")
+def test_predict(port: int, body: TestPredictBody) -> Any:
+    if port < 1 or port > 65535:
+        raise HTTPException(status_code=400, detail="Invalid port")
+    url = f"http://127.0.0.1:{port}/predict"
+    try:
+        r = requests.post(url, json={"features": body.features}, timeout=60)
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    try:
+        return r.json()
+    except Exception:
+        return {"raw": r.text, "status_code": r.status_code}

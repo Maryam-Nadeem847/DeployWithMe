@@ -1,0 +1,486 @@
+[
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "LogisticRegression",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\LogisticRegression.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9333333333333333,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "SGDClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\SGDClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "SVC_rbf",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\SVC_rbf.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9666666666666667,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "KNeighborsClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\KNeighborsClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 1.0,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "DecisionTreeClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\DecisionTreeClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9333333333333333,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "RandomForestClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\RandomForestClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "ExtraTreesClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\ExtraTreesClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9666666666666667,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "GradientBoostingClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\GradientBoostingClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9666666666666667,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "AdaBoostClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\AdaBoostClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9333333333333333,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "GaussianNB",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\GaussianNB.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9666666666666667,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "GaussianProcessClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\GaussianProcessClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9333333333333333,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "MLPClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\MLPClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9666666666666667,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "xgboost",
+    "model_name": "XGBClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\XGBClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "lightgbm",
+    "model_name": "LGBMClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\LGBMClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.8666666666666667,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "catboost",
+    "model_name": "CatBoostClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\iris\\CatBoostClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9666666666666667,
+    "extra": {
+      "dataset": "iris"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "LogisticRegression",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\LogisticRegression.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9722222222222222,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "SGDClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\SGDClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9722222222222222,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "SVC_rbf",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\SVC_rbf.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9722222222222222,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "KNeighborsClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\KNeighborsClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.8055555555555556,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "DecisionTreeClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\DecisionTreeClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9444444444444444,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "RandomForestClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\RandomForestClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 1.0,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "ExtraTreesClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\ExtraTreesClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 1.0,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "GradientBoostingClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\GradientBoostingClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9444444444444444,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "AdaBoostClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\AdaBoostClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9166666666666666,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "GaussianNB",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\GaussianNB.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9722222222222222,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "GaussianProcessClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\GaussianProcessClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.4444444444444444,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "MLPClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\MLPClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9722222222222222,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "xgboost",
+    "model_name": "XGBClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\XGBClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 1.0,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "lightgbm",
+    "model_name": "LGBMClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\LGBMClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 1.0,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "catboost",
+    "model_name": "CatBoostClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\wine\\CatBoostClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 1.0,
+    "extra": {
+      "dataset": "wine"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "LogisticRegression",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\LogisticRegression.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9824561403508771,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "SGDClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\SGDClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9736842105263158,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "SVC_rbf",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\SVC_rbf.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9824561403508771,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "KNeighborsClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\KNeighborsClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9122807017543859,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "DecisionTreeClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\DecisionTreeClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9122807017543859,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "RandomForestClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\RandomForestClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9473684210526315,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "ExtraTreesClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\ExtraTreesClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.956140350877193,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "GradientBoostingClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\GradientBoostingClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.956140350877193,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "AdaBoostClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\AdaBoostClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.956140350877193,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "GaussianNB",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\GaussianNB.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9385964912280702,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "GaussianProcessClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\GaussianProcessClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9122807017543859,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "sklearn",
+    "model_name": "MLPClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\MLPClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9649122807017544,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "lightgbm",
+    "model_name": "LGBMClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\LGBMClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.9649122807017544,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  },
+  {
+    "task": "classification",
+    "framework": "catboost",
+    "model_name": "CatBoostClassifier",
+    "file_path": "E:\\Cursor projects\\deployment_agent\\trained_models\\classification\\breast_cancer\\CatBoostClassifier.joblib",
+    "metric_name": "accuracy",
+    "metric_value": 0.956140350877193,
+    "extra": {
+      "dataset": "breast_cancer"
+    }
+  }
+]

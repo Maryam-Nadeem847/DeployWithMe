@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: deployment-agent
+Version: 0.1.0
+Summary: Autonomous ML model deployment agent (Phase 1: classical ML)
+Requires-Python: >=3.11
+Requires-Dist: langgraph>=0.2.0
+Requires-Dist: langchain-core>=0.3.0
+Requires-Dist: google-genai>=1.0.0
+Requires-Dist: groq>=0.11.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: joblib>=1.3.0
+Requires-Dist: scikit-learn>=1.3.0
+Requires-Dist: requests>=2.31.0
+Requires-Dist: onnxruntime>=1.18.0
+Requires-Dist: onnx>=1.16.0
+Requires-Dist: torch>=2.1.0
+Requires-Dist: tensorflow>=2.15.0

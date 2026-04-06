@@ -1,0 +1,2 @@
+[console_scripts]
+deploy-agent = deployment_agent.cli:main
