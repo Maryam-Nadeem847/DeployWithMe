@@ -13,6 +13,9 @@ export function useDeployment() {
   const [status, setStatus] = useState("idle");
   const [job, setJob] = useState(null);
   const [error, setError] = useState(null);
+  /** When POST /api/deploy returns route: "cloud", show redirect UI */
+  const [cloudRoute, setCloudRoute] = useState(null);
+  const [pendingCloudFiles, setPendingCloudFiles] = useState(null);
   const pollRef = useRef(null);
 
   const stopPoll = useCallback(() => {
@@ -49,6 +52,8 @@ export function useDeployment() {
     async (modelFile, requirementsFile) => {
       setError(null);
       setJob(null);
+      setCloudRoute(null);
+      setPendingCloudFiles(null);
       setStatus("starting");
       const form = new FormData();
       form.append("model_file", modelFile);
@@ -58,6 +63,20 @@ export function useDeployment() {
         const { data } = await API.post("/api/deploy", form, {
           headers: { "Content-Type": "multipart/form-data" },
         });
+        if (data?.route === "cloud") {
+          setCloudRoute({
+            reason: data.reason,
+            suggested_space_name: data.suggested_space_name,
+            file_size_mb: data.file_size_mb,
+          });
+          setPendingCloudFiles({
+            modelFile,
+            requirementsFile: requirementsFile || null,
+          });
+          setJobId(null);
+          setStatus("idle");
+          return;
+        }
         setJobId(data.job_id);
         setStatus("started");
       } catch (e) {
@@ -85,12 +104,19 @@ export function useDeployment() {
     [jobId, stopPoll]
   );
 
+  const clearCloudRoute = useCallback(() => {
+    setCloudRoute(null);
+    setPendingCloudFiles(null);
+  }, []);
+
   const reset = useCallback(() => {
     stopPoll();
     setJobId(null);
     setJob(null);
     setStatus("idle");
     setError(null);
+    setCloudRoute(null);
+    setPendingCloudFiles(null);
   }, [stopPoll]);
 
   return {
@@ -98,6 +124,9 @@ export function useDeployment() {
     status,
     job,
     error,
+    cloudRoute,
+    pendingCloudFiles,
+    clearCloudRoute,
     startDeploy,
     confirmDeploy,
     reset,

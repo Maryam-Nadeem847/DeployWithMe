@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/deployment_agent/hf_deployer.py'\\).read\\(\\)\\); print\\('hf_deployer.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/deployment_agent/api_server.py'\\).read\\(\\)\\); print\\('api_server.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('E:/Cursor projects/deployment_agent/src/deployment_agent/detection.py'\\).read\\(\\)\\); print\\('detection.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('E:/Cursor projects/deployment_agent/src/deployment_agent/hf_deployer.py'\\).read\\(\\)\\); print\\('hf_deployer.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('E:/Cursor projects/deployment_agent/src/deployment_agent/api_server.py'\\).read\\(\\)\\); print\\('api_server.py OK'\\)\")"
+    ]
+  }
+}

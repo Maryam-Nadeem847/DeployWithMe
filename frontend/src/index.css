@@ -98,6 +98,51 @@ html {
   animation: float 6s ease-in-out infinite;
 }
 
+/* Hero mascot (2D image) — distinct names from particle `float` */
+@keyframes robot-float {
+  0%,
+  100% {
+    transform: translateY(0px) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(-20px) rotate(2deg);
+  }
+}
+
+.robot-mascot-float {
+  animation: robot-float 4s ease-in-out infinite;
+}
+
+@keyframes robot-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.03);
+  }
+}
+
+.robot-mascot-breathe {
+  animation: robot-breathe 4s ease-in-out infinite;
+}
+
+@keyframes robot-glow-pulse {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 20px rgba(6, 182, 212, 0.4))
+      drop-shadow(0 0 40px rgba(6, 182, 212, 0.2));
+  }
+  50% {
+    filter: drop-shadow(0 0 20px rgba(6, 182, 212, 0.8))
+      drop-shadow(0 0 40px rgba(6, 182, 212, 0.4));
+  }
+}
+
+.robot-mascot-glow-pulse {
+  animation: robot-glow-pulse 3s ease-in-out infinite;
+}
+
 /* Progress bar shimmer */
 @keyframes shimmer-bar {
   0% {

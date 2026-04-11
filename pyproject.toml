@@ -23,6 +23,8 @@ dependencies = [
   "onnx>=1.16.0",
   "torch>=2.1.0",
   "tensorflow>=2.15.0",
+  "huggingface_hub>=0.20.0",
+  "gradio>=4.0.0",
 ]
 
 [project.scripts]

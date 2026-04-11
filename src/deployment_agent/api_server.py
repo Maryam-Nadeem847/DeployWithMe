@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import tempfile
 import threading
@@ -20,11 +21,13 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from deployment_agent.docker_ops import docker_rmi_force, docker_rm_force, run_cmd
+from deployment_agent.hf_deployer import deploy_to_huggingface, generate_space_name
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +35,17 @@ app = FastAPI(title="DeployWithMe Control API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 jobs: dict[str, dict[str, Any]] = {}
+cloud_jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
 
 
@@ -213,6 +221,18 @@ async def deploy(
     content = await model_file.read()
     model_path.write_bytes(content)
 
+    file_size_mb = os.path.getsize(model_path) / (1024 * 1024)
+    if file_size_mb > 50:
+        return JSONResponse({
+            "route": "cloud",
+            "reason": (
+                f"Model is {file_size_mb:.1f}MB. "
+                "Routing to HuggingFace Spaces for better performance."
+            ),
+            "suggested_space_name": generate_space_name(model_name),
+            "file_size_mb": round(file_size_mb, 1),
+        })
+
     req_path: str | None = None
     if requirements_file and requirements_file.filename:
         rq_name = _safe_filename(requirements_file.filename)
@@ -342,3 +362,123 @@ def test_predict(port: int, body: TestPredictBody) -> Any:
         return r.json()
     except Exception:
         return {"raw": r.text, "status_code": r.status_code}
+
+
+# ── HuggingFace Spaces cloud deployment endpoints ─────────────────────
+
+
+class CloudConfirmBody(BaseModel):
+    confirmed_space_name: str
+    hf_token: str
+
+
+def _cloud_deploy_worker(job_id: str) -> None:
+    with _jobs_lock:
+        job = cloud_jobs[job_id]
+        model_path = job["_model_path"]
+        model_filename = job["model_filename"]
+        framework = job["framework"]
+        sklearn_version = job.get("sklearn_version")
+        hf_token = job["_hf_token"]
+        space_name = job["_confirmed_space_name"]
+
+    def on_progress(step: str, msg: str):
+        with _jobs_lock:
+            job["step"] = step
+            job["message"] = msg
+
+    result = deploy_to_huggingface(
+        model_path=model_path,
+        framework=framework,
+        model_filename=model_filename,
+        hf_token=hf_token,
+        preferred_space_name=space_name,
+        progress_callback=on_progress,
+        sklearn_version=sklearn_version,
+    )
+
+    with _jobs_lock:
+        job["result"] = result
+        job["status"] = result.get("status", "failed")
+        job["step"] = "done"
+        job["message"] = result.get("error") or "Deployment complete."
+
+
+@app.post("/api/deploy/cloud")
+async def deploy_cloud(
+    model_file: UploadFile = File(...),
+    hf_token: str = Form(...),
+    preferred_space_name: str | None = Form(None),
+) -> dict[str, Any]:
+    from deployment_agent.detection import inspect_model_file
+
+    job_id = uuid.uuid4().hex[:8]
+    tmp = Path(tempfile.gettempdir()) / f"deploywithme_cloud_{job_id}"
+    tmp.mkdir(parents=True, exist_ok=True)
+
+    model_name = _safe_filename(model_file.filename)
+    model_path = tmp / model_name
+    content = await model_file.read()
+    model_path.write_bytes(content)
+
+    detection = inspect_model_file(model_path)
+    framework = detection.get("framework", "unknown")
+    sklearn_version = detection.get("sklearn_version")
+    suggested = preferred_space_name or generate_space_name(model_name)
+
+    with _jobs_lock:
+        cloud_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "awaiting_confirmation",
+            "step": "created",
+            "message": "Waiting for user confirmation.",
+            "framework": framework,
+            "model_filename": model_name,
+            "suggested_space_name": suggested,
+            "sklearn_version": sklearn_version,
+            "result": None,
+            "_model_path": str(model_path.resolve()),
+            "_hf_token": hf_token,
+            "_confirmed_space_name": None,
+            "_temp_dir": str(tmp),
+        }
+
+    return {
+        "job_id": job_id,
+        "suggested_space_name": suggested,
+        "framework": framework,
+    }
+
+
+@app.post("/api/deploy/cloud/confirm/{job_id}")
+def confirm_cloud(job_id: str, body: CloudConfirmBody) -> dict[str, str]:
+    with _jobs_lock:
+        job = cloud_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Unknown job_id")
+        if job["status"] != "awaiting_confirmation":
+            raise HTTPException(status_code=400, detail="Job is not awaiting confirmation")
+        job["_confirmed_space_name"] = body.confirmed_space_name
+        job["_hf_token"] = body.hf_token
+        job["status"] = "in_progress"
+        job["step"] = "starting"
+        job["message"] = "Starting cloud deployment..."
+
+    t = threading.Thread(target=_cloud_deploy_worker, args=(job_id,), daemon=True)
+    t.start()
+
+    return {"status": "started"}
+
+
+@app.get("/api/status/cloud/{job_id}")
+def get_cloud_status(job_id: str) -> dict[str, Any]:
+    with _jobs_lock:
+        job = cloud_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Unknown job_id")
+        return {
+            "step": job["step"],
+            "message": job["message"],
+            "status": job["status"],
+            "result": job["result"],
+        }

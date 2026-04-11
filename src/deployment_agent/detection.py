@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import pickle
 from pathlib import Path
 from typing import Any
 
@@ -55,23 +56,60 @@ def inspect_model_file(model_path: Path) -> dict[str, Any]:
             "detail": "Detected by extension (.h5/.keras)",
         }
 
+    # Extension-first detection for ML artifacts — avoids version-mismatch crashes.
+    ext_framework_map = {
+        ".pkl": "sklearn", ".pickle": "sklearn", ".joblib": "sklearn", ".sav": "sklearn",
+        ".json": "xgboost", ".ubj": "xgboost",
+    }
+    ext_framework = ext_framework_map.get(suffix, "unknown")
+
+    # Try to extract sklearn version metadata without requiring a compatible install.
+    sklearn_version: str | None = None
+    if ext_framework == "sklearn":
+        try:
+            with open(path, "rb") as f:
+                data = pickle.load(f)
+                if hasattr(data, "__sklearn_version__"):
+                    sklearn_version = data.__sklearn_version__
+                elif hasattr(data, "_sklearn_version"):
+                    sklearn_version = data._sklearn_version
+        except Exception:
+            sklearn_version = None
+
+    # Try full load for richer metadata, but never crash.
     try:
         obj = joblib.load(path)
+        framework, detail = _classify_object(obj)
+        has_proba = hasattr(obj, "predict_proba")
+        n_features = getattr(obj, "n_features_in_", None)
+
+        # Extract sklearn version from loaded object if not found via pickle.
+        if sklearn_version is None and framework == "sklearn":
+            if hasattr(obj, "__sklearn_version__"):
+                sklearn_version = obj.__sklearn_version__
+            elif hasattr(obj, "_sklearn_version"):
+                sklearn_version = obj._sklearn_version
+
+        return {
+            "framework": framework,
+            "estimator_class": f"{type(obj).__module__}.{type(obj).__name__}",
+            "has_predict_proba": bool(has_proba),
+            "n_features_in": int(n_features) if n_features is not None else None,
+            "task_type": "ml",
+            "detail": detail,
+            "sklearn_version": sklearn_version,
+        }
     except Exception as e:
-        raise RuntimeError(f"Could not load model with joblib: {e}") from e
-
-    framework, detail = _classify_object(obj)
-    has_proba = hasattr(obj, "predict_proba")
-    n_features = getattr(obj, "n_features_in_", None)
-
-    return {
-        "framework": framework,
-        "estimator_class": f"{type(obj).__module__}.{type(obj).__name__}",
-        "has_predict_proba": bool(has_proba),
-        "n_features_in": int(n_features) if n_features is not None else None,
-        "task_type": "ml",
-        "detail": detail,
-    }
+        logger.warning("Could not load model with joblib (version mismatch?): %s", e)
+        return {
+            "framework": ext_framework,
+            "estimator_class": None,
+            "has_predict_proba": False,
+            "n_features_in": None,
+            "task_type": "ml",
+            "detail": f"Detected by extension ({suffix}); load failed: {e}",
+            "sklearn_version": sklearn_version,
+        }
 
 
 def _classify_object(obj: Any) -> tuple[str, str]:
