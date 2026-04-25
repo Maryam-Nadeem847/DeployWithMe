@@ -40,30 +40,46 @@ def generate_gradio_app(framework: str, model_filename: str) -> str:
     if framework in ("sklearn", "joblib"):
         load_code = f'model = joblib.load("{model_filename}")'
         imports = "import joblib\nimport numpy as np"
-        predict_code = (
+        ui_predict_body = (
             "    values = [float(x.strip()) for x in input_text.split(',')]\n"
             "    X = np.array([values])\n"
             "    prediction = model.predict(X)\n"
             "    return str(prediction.tolist())"
         )
+        api_predict_body = (
+            "    X = np.array([req.features])\n"
+            "    pred = model.predict(X)\n"
+            "    return {\"prediction\": pred.tolist()}"
+        )
     elif framework == "pytorch":
         load_code = f'model = torch.jit.load("{model_filename}", map_location="cpu")\nmodel.eval()'
         imports = "import torch\nimport numpy as np"
-        predict_code = (
+        ui_predict_body = (
             "    values = [float(x.strip()) for x in input_text.split(',')]\n"
             "    x = torch.tensor([values], dtype=torch.float32)\n"
             "    with torch.no_grad():\n"
             "        output = model(x)\n"
             "    return str(output.detach().cpu().numpy().tolist())"
         )
+        api_predict_body = (
+            "    x = torch.tensor([req.features], dtype=torch.float32)\n"
+            "    with torch.no_grad():\n"
+            "        output = model(x)\n"
+            "    return {\"prediction\": output.detach().cpu().numpy().tolist()}"
+        )
     elif framework in ("tensorflow", "keras"):
         load_code = f'model = keras.models.load_model("{model_filename}", compile=False)'
         imports = "import numpy as np\nimport keras"
-        predict_code = (
+        ui_predict_body = (
             "    values = [float(x.strip()) for x in input_text.split(',')]\n"
             "    X = np.array([values], dtype=np.float32)\n"
             "    prediction = model.predict(X, verbose=0)\n"
             "    return str(prediction.tolist())"
+        )
+        api_predict_body = (
+            "    X = np.array([req.features], dtype=np.float32)\n"
+            "    pred = model.predict(X, verbose=0)\n"
+            "    return {\"prediction\": pred.tolist()}"
         )
     elif framework == "onnx":
         load_code = (
@@ -72,38 +88,79 @@ def generate_gradio_app(framework: str, model_filename: str) -> str:
             'input_name = session.get_inputs()[0].name'
         )
         imports = "import numpy as np"
-        predict_code = (
+        ui_predict_body = (
             "    values = [float(x.strip()) for x in input_text.split(',')]\n"
             "    X = np.array([values], dtype=np.float32)\n"
             "    outputs = session.run(None, {input_name: X})\n"
             "    return str([o.tolist() for o in outputs])"
         )
+        api_predict_body = (
+            "    X = np.array([req.features], dtype=np.float32)\n"
+            "    outputs = session.run(None, {input_name: X})\n"
+            "    return {\"prediction\": [o.tolist() for o in outputs]}"
+        )
     else:
         # Fallback: assume joblib-loadable
         load_code = f'model = joblib.load("{model_filename}")'
         imports = "import joblib\nimport numpy as np"
-        predict_code = (
+        ui_predict_body = (
             "    values = [float(x.strip()) for x in input_text.split(',')]\n"
             "    X = np.array([values])\n"
             "    prediction = model.predict(X)\n"
             "    return str(prediction.tolist())"
         )
+        api_predict_body = (
+            "    X = np.array([req.features])\n"
+            "    pred = model.predict(X)\n"
+            "    return {\"prediction\": pred.tolist()}"
+        )
 
     return f"""{imports}
 import gradio as gr
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List
 
 {load_code}
 
-def predict(input_text):
-{predict_code}
+def predict_ui(input_text):
+{ui_predict_body}
 
 demo = gr.Interface(
-    fn=predict,
+    fn=predict_ui,
     inputs=gr.Textbox(placeholder="1.2, 3.4, 5.6", label="Features (comma-separated)"),
     outputs=gr.Textbox(label="Prediction"),
     title="{framework} Model Inference",
 )
-demo.launch(server_name="0.0.0.0", server_port=7860)
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class PredictRequest(BaseModel):
+    features: List[float]
+
+
+@app.post("/predict")
+def predict_api(req: PredictRequest):
+{api_predict_body}
+
+
+@app.get("/health")
+def health():
+    return {{"status": "ok"}}
+
+
+app = gr.mount_gradio_app(app, demo, path="/")
+
+uvicorn.run(app, host="0.0.0.0", port=7860)
 """
 
 
@@ -118,7 +175,7 @@ def generate_requirements(framework: str, sklearn_version: str | None = None) ->
     elif framework == "pytorch":
         pkgs = ["torch", "numpy"]
     elif framework in ("tensorflow", "keras"):
-        pkgs = ["tensorflow-cpu"]
+        pkgs = ["tensorflow-cpu", "h5py"]
     elif framework == "onnx":
         pkgs = ["onnxruntime", "numpy"]
     else:

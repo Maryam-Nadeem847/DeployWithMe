@@ -12,6 +12,16 @@ import { useCloudDeploy } from "../hooks/useCloudDeploy.js";
 
 const FORMAT_PILLS = [".pkl", ".pt", ".h5", ".onnx", ".joblib"];
 
+const MODEL_TYPE_OPTIONS = [
+  "Image Classification",
+  "Image Segmentation",
+  "Tabular/Regression",
+  "Text Classification",
+  "Object Detection",
+  "Time Series",
+  "Other",
+];
+
 const CARD =
   "rounded-2xl border border-white/60 bg-white/50 p-6 shadow-[0_8px_32px_0_rgba(31,38,135,0.07)] backdrop-blur-xl";
 
@@ -50,6 +60,13 @@ export default function DeployCloudPage() {
   const [copied, setCopied] = useState(false);
   const hydratedRef = useRef(false);
 
+  const [showTestModal, setShowTestModal] = useState(false);
+  const [selectedModelType, setSelectedModelType] = useState("");
+  const [otherModelDesc, setOtherModelDesc] = useState("");
+  const [generatingTestUI, setGeneratingTestUI] = useState(false);
+  const [generatedTestHTML, setGeneratedTestHTML] = useState("");
+  const [testGenError, setTestGenError] = useState("");
+
   useEffect(() => {
     hydratedRef.current = false;
   }, [location.pathname]);
@@ -76,6 +93,85 @@ export default function DeployCloudPage() {
     navigator.clipboard.writeText(u);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const openTestModal = () => {
+    setSelectedModelType("");
+    setOtherModelDesc("");
+    setTestGenError("");
+    setShowTestModal(true);
+  };
+
+  const generateTestUI = async () => {
+    setTestGenError("");
+    if (!selectedModelType) {
+      setTestGenError("Please select a model type.");
+      return;
+    }
+    if (selectedModelType === "Other" && !otherModelDesc.trim()) {
+      setTestGenError("Please describe your model.");
+      return;
+    }
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    if (!apiKey) {
+      setTestGenError(
+        "VITE_GEMINI_API_KEY is not set. Add it to frontend/.env and restart the dev server."
+      );
+      return;
+    }
+    if (!apiUrl) {
+      setTestGenError("No deployed API URL available.");
+      return;
+    }
+
+    setGeneratingTestUI(true);
+    try {
+      const typeDesc =
+        selectedModelType === "Other"
+          ? `Other — ${otherModelDesc.trim()}`
+          : selectedModelType;
+
+      const prompt = `Generate a complete, self-contained, single-file HTML document (with ALL CSS and JavaScript inline) that serves as a test interface for an ML model deployed at: ${apiUrl}
+
+Model type: ${typeDesc}
+
+Hard requirements:
+- The HTML must be fully self-contained: no external CSS, no external JS, no CDNs, no <link>, no <script src=>.
+- The page MUST call ${apiUrl}/predict directly via fetch() POST with a JSON body appropriate for the given model type.
+- Provide an input UI suitable for the model type (e.g., file upload + base64/dataURL encoding for images; textarea for text; comma-separated number inputs for tabular/time-series; etc.).
+- Show the prediction result clearly (handle both JSON and text responses; show errors on failure).
+- Use modern, clean styling that works without any external assets. Mobile-friendly.
+- Output ONLY the raw HTML, starting with <!DOCTYPE html>. Do NOT wrap it in markdown code fences. Do NOT add any explanation text.`;
+
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+        apiKey
+      )}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+        }),
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(`Gemini error ${res.status}: ${t.slice(0, 300)}`);
+      }
+      const data = await res.json();
+      let html = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      html = html
+        .replace(/^\s*```html\s*/i, "")
+        .replace(/^\s*```\s*/i, "")
+        .replace(/\s*```\s*$/i, "")
+        .trim();
+      if (!html) throw new Error("Empty response from Gemini.");
+      setGeneratedTestHTML(html);
+      setShowTestModal(false);
+    } catch (e) {
+      setTestGenError(e?.message || String(e));
+    } finally {
+      setGeneratingTestUI(false);
+    }
   };
 
   return (
@@ -311,9 +407,100 @@ export default function DeployCloudPage() {
               <Copy className="mr-1 h-4 w-4" />
               {copied ? "Copied!" : "Copy URL"}
             </button>
+            <button type="button" onClick={openTestModal} className="btn-ghost">
+              Test Deployment
+            </button>
             <button type="button" onClick={() => reset()} className="btn-primary">
               Deploy Another Model
             </button>
+          </div>
+
+          {generatedTestHTML && (
+            <div className="space-y-3 pt-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-bold text-slate-800">Generated Test Interface</h3>
+                <button
+                  type="button"
+                  onClick={() => setGeneratedTestHTML("")}
+                  className="btn-ghost text-xs"
+                >
+                  Close
+                </button>
+              </div>
+              <iframe
+                title="Generated Test Interface"
+                srcDoc={generatedTestHTML}
+                sandbox="allow-scripts allow-forms"
+                className="h-[600px] w-full rounded-xl border border-white/60 bg-white"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {showTestModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className={`${CARD} w-full max-w-md space-y-4`}>
+            <h3 className="text-lg font-bold text-slate-800">Generate Test Interface</h3>
+            <p className="text-sm text-slate-600">
+              What kind of model is this? We&apos;ll generate a test page tailored to that type.
+            </p>
+            <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+              {MODEL_TYPE_OPTIONS.map((t) => (
+                <label
+                  key={t}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg border border-white/60 bg-white/40 px-3 py-2 text-sm text-slate-700 backdrop-blur-sm hover:bg-white/60"
+                >
+                  <input
+                    type="radio"
+                    name="modelType"
+                    value={t}
+                    checked={selectedModelType === t}
+                    onChange={(e) => setSelectedModelType(e.target.value)}
+                  />
+                  {t}
+                </label>
+              ))}
+            </div>
+            {selectedModelType === "Other" && (
+              <textarea
+                value={otherModelDesc}
+                onChange={(e) => setOtherModelDesc(e.target.value)}
+                placeholder="Describe your model — inputs, outputs, expected request shape…"
+                rows={3}
+                className="w-full rounded-xl border border-white/60 bg-white/50 p-3 text-sm text-slate-800 backdrop-blur-sm outline-none focus:ring-2 focus:ring-sky-200"
+              />
+            )}
+            {testGenError && <p className="text-sm text-red-600">{testGenError}</p>}
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowTestModal(false)}
+                disabled={generatingTestUI}
+                className="btn-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={generateTestUI}
+                disabled={generatingTestUI}
+                className="btn-primary"
+              >
+                {generatingTestUI ? (
+                  <>
+                    <Loader2 className="mr-1 inline h-4 w-4 animate-spin" />
+                    Generating…
+                  </>
+                ) : (
+                  "Generate"
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}
