@@ -311,6 +311,9 @@ export default function DeployCloudPage() {
               <Copy className="mr-1 h-4 w-4" />
               {copied ? "Copied!" : "Copy URL"}
             </button>
+            <button type="button" onClick={() => reset()} className="btn-primary">
+              Deploy Another Model
+            </button>
           </div>
         </div>
       )}

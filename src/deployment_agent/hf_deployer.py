@@ -11,7 +11,7 @@ import string
 import time
 from pathlib import Path
 
-from huggingface_hub import HfApi, SpaceStage, create_repo
+from huggingface_hub import CommitOperationAdd, HfApi, SpaceStage, create_repo
 
 
 def generate_space_name(model_filename: str) -> str:
@@ -108,18 +108,22 @@ demo.launch(server_name="0.0.0.0", server_port=7860)
 
 
 def generate_requirements(framework: str, sklearn_version: str | None = None) -> str:
-    # gradio + huggingface_hub are installed explicitly in the Dockerfile
-    # before requirements.txt, so they are NOT listed here.
+    HF_PINNED = [
+        "gradio==5.9.1",
+        "huggingface_hub>=0.26.0",
+    ]
     if framework in ("sklearn", "joblib"):
         sklearn_pin = f"scikit-learn=={sklearn_version}" if sklearn_version else "scikit-learn"
-        return "\n".join([sklearn_pin, "numpy", "scipy", "joblib"])
-    if framework == "pytorch":
-        return "\n".join(["torch", "numpy"])
-    if framework in ("tensorflow", "keras"):
-        return "tensorflow-cpu"
-    if framework == "onnx":
-        return "\n".join(["onnxruntime", "numpy"])
-    return "numpy"
+        pkgs = [sklearn_pin, "numpy", "scipy", "joblib"]
+    elif framework == "pytorch":
+        pkgs = ["torch", "numpy"]
+    elif framework in ("tensorflow", "keras"):
+        pkgs = ["tensorflow-cpu"]
+    elif framework == "onnx":
+        pkgs = ["onnxruntime", "numpy"]
+    else:
+        pkgs = ["numpy"]
+    return "\n".join(HF_PINNED + pkgs)
 
 
 def generate_dockerfile() -> str:
@@ -127,11 +131,8 @@ def generate_dockerfile() -> str:
     return """FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir \
-    "huggingface_hub==0.23.4" \
-    "gradio==4.44.1" && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 CMD ["python", "app.py"]
 """
@@ -201,39 +202,44 @@ def deploy_to_huggingface(
         readme_content = generate_readme(final_name, framework)
         dockerfile_content = generate_dockerfile()
 
-        # 5. Upload files (README first so HF picks up sdk="docker", then
-        #    Dockerfile before anything else so the build context is ready)
+        # 5. Upload all files in a single atomic commit. Separate upload_file
+        #    calls each create their own commit and HF kicks off a build on
+        #    every commit — that races the (large) model upload and makes the
+        #    container start before the model file is actually on the Hub.
         update("uploading", "Uploading files to HuggingFace...")
-        api.upload_file(
-            path_or_fileobj=readme_content.encode(),
-            path_in_repo="README.md",
+        operations = [
+            CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=readme_content.encode()),
+            CommitOperationAdd(path_in_repo="Dockerfile", path_or_fileobj=dockerfile_content.encode()),
+            CommitOperationAdd(path_in_repo="requirements.txt", path_or_fileobj=req_content.encode()),
+            CommitOperationAdd(path_in_repo="app.py", path_or_fileobj=app_content.encode()),
+            CommitOperationAdd(path_in_repo=model_filename, path_or_fileobj=model_path),
+        ]
+        api.create_commit(
             repo_id=repo_id,
             repo_type="space",
+            operations=operations,
+            commit_message="Initial deployment",
         )
-        api.upload_file(
-            path_or_fileobj=dockerfile_content.encode(),
-            path_in_repo="Dockerfile",
-            repo_id=repo_id,
-            repo_type="space",
-        )
-        api.upload_file(
-            path_or_fileobj=req_content.encode(),
-            path_in_repo="requirements.txt",
-            repo_id=repo_id,
-            repo_type="space",
-        )
-        api.upload_file(
-            path_or_fileobj=app_content.encode(),
-            path_in_repo="app.py",
-            repo_id=repo_id,
-            repo_type="space",
-        )
-        api.upload_file(
-            path_or_fileobj=model_path,
-            path_in_repo=model_filename,
-            repo_id=repo_id,
-            repo_type="space",
-        )
+
+        # 5b. Verify every file (especially the model) is confirmed present
+        #     on the Hub before allowing the build poll to proceed.
+        update("verifying", "Confirming all files uploaded...")
+        expected = {"README.md", "Dockerfile", "requirements.txt", "app.py", model_filename}
+        verify_deadline = time.time() + 60
+        present: set[str] = set()
+        while time.time() < verify_deadline:
+            present = set(api.list_repo_files(repo_id=repo_id, repo_type="space"))
+            if expected.issubset(present):
+                break
+            time.sleep(2)
+        else:
+            return {
+                "status": "failed",
+                "error": (
+                    "Upload verification failed: missing files in repo: "
+                    f"{sorted(expected - present)}"
+                ),
+            }
 
         # 6. Poll until RUNNING (timeout 5 min)
         update("building", "HuggingFace is building your Space...")
