@@ -370,6 +370,9 @@ def test_predict(port: int, body: TestPredictBody) -> Any:
 class CloudConfirmBody(BaseModel):
     confirmed_space_name: str
     hf_token: str
+    model_type: str | None = None
+    model_type_description: str | None = None
+    input_spec: dict[str, Any] | None = None
 
 
 def _cloud_deploy_worker(job_id: str) -> None:
@@ -381,6 +384,8 @@ def _cloud_deploy_worker(job_id: str) -> None:
         sklearn_version = job.get("sklearn_version")
         hf_token = job["_hf_token"]
         space_name = job["_confirmed_space_name"]
+        model_type = job.get("model_type") or "Tabular/Regression"
+        input_spec = job.get("input_spec")
 
     def on_progress(step: str, msg: str):
         with _jobs_lock:
@@ -395,6 +400,8 @@ def _cloud_deploy_worker(job_id: str) -> None:
         preferred_space_name=space_name,
         progress_callback=on_progress,
         sklearn_version=sklearn_version,
+        model_type=model_type,
+        input_spec=input_spec,
     )
 
     with _jobs_lock:
@@ -410,7 +417,7 @@ async def deploy_cloud(
     hf_token: str = Form(...),
     preferred_space_name: str | None = Form(None),
 ) -> dict[str, Any]:
-    from deployment_agent.detection import inspect_model_file
+    from deployment_agent.detection import extract_input_spec, inspect_model_file
 
     job_id = uuid.uuid4().hex[:8]
     tmp = Path(tempfile.gettempdir()) / f"deploywithme_cloud_{job_id}"
@@ -424,6 +431,8 @@ async def deploy_cloud(
     detection = inspect_model_file(model_path)
     framework = detection.get("framework", "unknown")
     sklearn_version = detection.get("sklearn_version")
+    input_spec_auto = extract_input_spec(model_path, framework)
+    detection["input_spec"] = input_spec_auto
     suggested = preferred_space_name or generate_space_name(model_name)
 
     with _jobs_lock:
@@ -436,6 +445,10 @@ async def deploy_cloud(
             "model_filename": model_name,
             "suggested_space_name": suggested,
             "sklearn_version": sklearn_version,
+            "input_spec_auto": input_spec_auto,
+            "input_spec": None,
+            "model_type": None,
+            "model_type_description": None,
             "result": None,
             "_model_path": str(model_path.resolve()),
             "_hf_token": hf_token,
@@ -447,6 +460,7 @@ async def deploy_cloud(
         "job_id": job_id,
         "suggested_space_name": suggested,
         "framework": framework,
+        "input_spec_auto": input_spec_auto,
     }
 
 
@@ -460,6 +474,9 @@ def confirm_cloud(job_id: str, body: CloudConfirmBody) -> dict[str, str]:
             raise HTTPException(status_code=400, detail="Job is not awaiting confirmation")
         job["_confirmed_space_name"] = body.confirmed_space_name
         job["_hf_token"] = body.hf_token
+        job["model_type"] = body.model_type
+        job["model_type_description"] = body.model_type_description
+        job["input_spec"] = body.input_spec or job.get("input_spec_auto")
         job["status"] = "in_progress"
         job["step"] = "starting"
         job["message"] = "Starting cloud deployment..."

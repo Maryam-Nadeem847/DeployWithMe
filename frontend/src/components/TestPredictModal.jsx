@@ -55,11 +55,51 @@ export default function TestPredictModal({ open, onClose, port }) {
           >
             {busy ? "Running…" : "Run"}
           </button>
-          {out?.ok != null && (
+          {out?.ok != null && out.ok.predicted_class !== undefined ? (
+            <div className="mt-3 space-y-3">
+              <div className="rounded-2xl border border-emerald-200/70 bg-gradient-to-br from-emerald-50/80 to-teal-50/60 p-4 backdrop-blur-sm">
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                  Predicted class
+                </p>
+                <p className="mt-1 text-2xl font-bold text-slate-800">
+                  Class {out.ok.predicted_class}
+                </p>
+                {typeof out.ok.confidence === "number" && (
+                  <p className="mt-0.5 text-sm font-medium text-emerald-700">
+                    Confidence: {(out.ok.confidence * 100).toFixed(2)}%
+                  </p>
+                )}
+              </div>
+              {Array.isArray(out.ok.all_probabilities) && (
+                <details className="rounded-xl border border-white/60 bg-white/40 px-3 py-2 text-xs text-slate-700 backdrop-blur-sm">
+                  <summary className="cursor-pointer font-semibold text-slate-800">
+                    All probabilities ({out.ok.all_probabilities.length})
+                  </summary>
+                  <ul className="mt-2 space-y-1">
+                    {out.ok.all_probabilities.map((p, i) => (
+                      <li
+                        key={i}
+                        className={`flex justify-between font-mono ${
+                          i === out.ok.predicted_class
+                            ? "font-bold text-emerald-700"
+                            : ""
+                        }`}
+                      >
+                        <span>Class {i}</span>
+                        <span>
+                          {typeof p === "number" ? (p * 100).toFixed(2) : p}%
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          ) : out?.ok != null ? (
             <pre className="code-block custom-scrollbar mt-3 max-h-40 overflow-auto text-xs">
               {JSON.stringify(out.ok, null, 2)}
             </pre>
-          )}
+          ) : null}
           {out?.err && <p className="mt-3 text-sm text-red-600">{out.err}</p>}
         </div>
       </div>

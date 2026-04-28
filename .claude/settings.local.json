@@ -5,7 +5,14 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/deployment_agent/api_server.py'\\).read\\(\\)\\); print\\('api_server.py OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('E:/Cursor projects/deployment_agent/src/deployment_agent/detection.py'\\).read\\(\\)\\); print\\('detection.py OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('E:/Cursor projects/deployment_agent/src/deployment_agent/hf_deployer.py'\\).read\\(\\)\\); print\\('hf_deployer.py OK'\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('E:/Cursor projects/deployment_agent/src/deployment_agent/api_server.py'\\).read\\(\\)\\); print\\('api_server.py OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('E:/Cursor projects/deployment_agent/src/deployment_agent/api_server.py'\\).read\\(\\)\\); print\\('api_server.py OK'\\)\")",
+      "Bash(python *)",
+      "Bash(ls node_modules/.bin/esbuild*)",
+      "Bash(ls node_modules/esbuild)",
+      "Bash(npx --no-install vite --version)",
+      "Bash(node_modules/.bin/esbuild src/pages/DeployCloudPage.jsx src/hooks/useCloudDeploy.js --loader:.jsx=jsx --loader:.js=jsx --bundle=false --log-level=warning)",
+      "Bash(node_modules/.bin/esbuild src/pages/DeployCloudPage.jsx --loader:.jsx=jsx --bundle=false --log-level=warning)",
+      "Bash(node_modules/.bin/esbuild src/hooks/useCloudDeploy.js --loader:.js=jsx --bundle=false --log-level=warning)"
     ]
   }
 }

@@ -44,6 +44,10 @@ export function useCloudDeploy() {
   const [error, setError] = useState(null);
 
   const [modelFile, setModelFile] = useState(null);
+  const [modelType, setModelType] = useState("");
+  const [modelTypeDesc, setModelTypeDesc] = useState("");
+  const [inputSpecAuto, setInputSpecAuto] = useState(null);
+  const [inputSpec, setInputSpec] = useState(null);
   const pollRef = useRef(null);
 
   const stopPoll = useCallback(() => {
@@ -140,6 +144,9 @@ export function useCloudDeploy() {
       setSuggestedName(sug);
       setConfirmedName((prev) => (sug ? sug : prev));
       if (data?.framework) setFramework(data.framework);
+      const auto = data?.input_spec_auto ?? data?.inputSpecAuto ?? null;
+      setInputSpecAuto(auto);
+      setInputSpec(auto);
       setStep("checkpoint");
     } catch (e) {
       const msg = e?.response?.data?.detail || e.message;
@@ -155,11 +162,22 @@ export function useCloudDeploy() {
       setError("Space name and token are required.");
       return;
     }
+    if (!modelType) {
+      setError("Please select a model type.");
+      return;
+    }
+    if (modelType === "Other" && !modelTypeDesc.trim()) {
+      setError("Please describe your model.");
+      return;
+    }
     setError(null);
     try {
       await API.post(`/api/deploy/cloud/confirm/${id}`, {
         confirmed_space_name: name,
         hf_token: token,
+        model_type: modelType,
+        model_type_description: modelType === "Other" ? modelTypeDesc.trim() : null,
+        input_spec: inputSpec,
       });
       setStep("deploying");
       setStatusMessage("");
@@ -171,7 +189,7 @@ export function useCloudDeploy() {
       setError(typeof msg === "string" ? msg : JSON.stringify(msg));
       setStep("failed");
     }
-  }, [jobId, confirmedName, suggestedName, hfToken]);
+  }, [jobId, confirmedName, suggestedName, hfToken, modelType, modelTypeDesc, inputSpec]);
 
   const reset = useCallback(() => {
     stopPoll();
@@ -187,6 +205,10 @@ export function useCloudDeploy() {
     setResult(null);
     setError(null);
     setModelFile(null);
+    setModelType("");
+    setModelTypeDesc("");
+    setInputSpecAuto(null);
+    setInputSpec(null);
   }, [stopPoll]);
 
   const activePillIndex =
@@ -207,6 +229,13 @@ export function useCloudDeploy() {
     framework,
     modelFile,
     setModelFile,
+    modelType,
+    setModelType,
+    modelTypeDesc,
+    setModelTypeDesc,
+    inputSpec,
+    setInputSpec,
+    inputSpecAuto,
     statusMessage,
     apiStatus,
     apiStep,

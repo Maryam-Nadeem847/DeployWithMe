@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import {
+  AlertTriangle,
   Check,
+  CheckCircle2,
   CloudUpload,
   Copy,
   ExternalLink,
@@ -31,6 +33,330 @@ function formatBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const IMAGE_TYPES = new Set([
+  "Image Classification",
+  "Image Segmentation",
+  "Object Detection",
+]);
+
+function buildGeminiPrompt({ apiUrl, modelType, modelTypeDesc }) {
+  const isImage = IMAGE_TYPES.has(modelType);
+  const isSegmentation = modelType === "Image Segmentation";
+
+  const schemaByType = {
+    "Tabular/Regression": '{"features": [<number>, <number>, ...]}',
+    "Time Series": '{"sequence": [<number>, <number>, ...]}',
+    "Image Classification":
+      '{"image": "<base64-encoded image bytes, no data: prefix>", "size": <int, optional>}',
+    "Image Segmentation":
+      '{"image": "<base64-encoded image bytes, no data: prefix>", "size": <int, optional>}',
+    "Object Detection":
+      '{"image": "<base64-encoded image bytes, no data: prefix>", "size": <int, optional>}',
+    "Text Classification": '{"text": "<string>"}',
+    Other: '{"data": "<string>"}',
+  };
+
+  const responseHint = isSegmentation
+    ? 'The response is JSON: {"mask_png_base64": "<base64 PNG>", "shape": [H, W], "input_size": [H, W]}. Render mask_png_base64 inside an <img src="data:image/png;base64,..."> element so the user sees the predicted segmentation mask. Also display shape and input_size as text alongside the image.'
+    : isImage
+      ? 'The response is JSON: {"prediction": <array>, "input_size": [H, W]}. Display the prediction array (formatted readably) and input_size.'
+      : "The response is JSON. Display the prediction clearly. On error, show the JSON error body.";
+
+  const imageNotes = isImage
+    ? `\nFor the image input: include a file picker that converts the chosen file to base64 (strip the "data:image/...;base64," prefix before sending). Include a NUMERIC RESIZE INPUT labeled "Resize" defaulting to ${
+        isSegmentation ? 256 : 224
+      }. Display a visible warning under the resize input that reads exactly: "Value must be divisible by 32." Send {"image": <base64>, "size": <number>} as the POST body.`
+    : "";
+
+  const typeDescription =
+    modelType === "Other"
+      ? `Other — ${(modelTypeDesc || "").trim()}`
+      : modelType;
+
+  return `Generate a complete, self-contained, single-file HTML document (with ALL CSS and JavaScript inline) that serves as a test interface for an ML model deployed at: ${apiUrl}
+
+Model type: ${typeDescription}
+
+The page MUST POST to ${apiUrl}/predict with EXACTLY this JSON body shape:
+${schemaByType[modelType] || schemaByType["Tabular/Regression"]}
+
+Response handling:
+${responseHint}${imageNotes}
+
+Hard requirements:
+- Fully self-contained: no external CSS, no external JS, no CDNs, no <link>, no <script src=>.
+- Call ${apiUrl}/predict directly via fetch() POST using the exact JSON body shape above.
+- Show successful predictions and error responses clearly. Mobile-friendly.
+- Output ONLY the raw HTML, starting with <!DOCTYPE html>. No markdown fences, no explanation.`;
+}
+
+async function callGeminiOnce(prompt, apiKey) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+    apiKey
+  )}`;
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+  });
+}
+
+const NORMALIZATION_OPTIONS = [
+  { value: "div255", label: "/255 → [0,1]" },
+  { value: "imagenet", label: "ImageNet stats" },
+  { value: "minus1to1", label: "[-1, 1]" },
+  { value: "raw", label: "Raw [0, 255]" },
+];
+
+const COLOR_ORDER_OPTIONS = [
+  { value: "RGB", label: "RGB" },
+  { value: "BGR", label: "BGR" },
+];
+
+const INTERPOLATION_OPTIONS = [
+  { value: "BILINEAR", label: "Bilinear" },
+  { value: "BICUBIC", label: "Bicubic" },
+  { value: "NEAREST", label: "Nearest" },
+  { value: "LANCZOS", label: "Lanczos" },
+];
+
+function normLabel(value) {
+  return NORMALIZATION_OPTIONS.find((o) => o.value === value)?.label || value;
+}
+
+function channelsLabel(c) {
+  if (c === 1) return "grayscale";
+  if (c === 3) return "RGB";
+  return `${c}-channel`;
+}
+
+function specWithDefaults(s) {
+  return {
+    height: Number(s?.height) || 224,
+    width: Number(s?.width) || 224,
+    channels: Number(s?.channels) || 3,
+    channel_order: s?.channel_order || "NHWC",
+    normalization: s?.normalization || "div255",
+    channel_color_order: s?.channel_color_order || "RGB",
+    interpolation: s?.interpolation || "BILINEAR",
+  };
+}
+
+function InputSpecPanel({ spec, auto, onChange }) {
+  const autoOk = !!auto && auto.auto_detected && !auto.dynamic;
+  const [expanded, setExpanded] = useState(!autoOk);
+  const current = specWithDefaults(spec || auto);
+  const set = (key, value) => onChange({ ...current, [key]: value });
+  const grayscale = current.channels === 1;
+
+  return (
+    <div className="rounded-xl border border-white/60 bg-white/40 p-4 backdrop-blur-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-800">Input Spec</p>
+          {autoOk ? (
+            <p className="mt-0.5 flex items-center gap-1 text-xs font-medium text-emerald-600">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Auto-detected from model
+            </p>
+          ) : (
+            <p className="mt-0.5 flex items-center gap-1 text-xs font-medium text-amber-600">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Auto-detect couldn&apos;t determine these — please confirm
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => setExpanded((x) => !x)}
+          className="btn-ghost text-xs"
+        >
+          {expanded ? "Collapse" : "Edit"}
+        </button>
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-x-6 gap-y-1 text-sm text-slate-700 sm:grid-cols-2">
+        <div>
+          <span className="text-slate-500">Size:</span>{" "}
+          <span className="font-medium">
+            {current.width} × {current.height}
+          </span>
+        </div>
+        <div>
+          <span className="text-slate-500">Channels:</span>{" "}
+          <span className="font-medium">
+            {current.channels} ({channelsLabel(current.channels)})
+          </span>
+        </div>
+        <div>
+          <span className="text-slate-500">Normalization:</span>{" "}
+          <span className="font-medium">{normLabel(current.normalization)}</span>
+        </div>
+        <div>
+          <span className="text-slate-500">Channel order:</span>{" "}
+          <span className="font-medium">{current.channel_color_order}</span>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="mt-4 space-y-4 border-t border-white/60 pt-4">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-xs">
+              <span className="block font-semibold text-slate-700">Width</span>
+              <input
+                type="number"
+                min="1"
+                value={current.width}
+                onChange={(e) => set("width", Number(e.target.value) || 0)}
+                className="mt-1 w-full rounded-lg border border-white/60 bg-white/50 px-2 py-1.5 text-sm text-slate-800 backdrop-blur-sm outline-none focus:ring-2 focus:ring-sky-200"
+              />
+            </label>
+            <label className="text-xs">
+              <span className="block font-semibold text-slate-700">Height</span>
+              <input
+                type="number"
+                min="1"
+                value={current.height}
+                onChange={(e) => set("height", Number(e.target.value) || 0)}
+                className="mt-1 w-full rounded-lg border border-white/60 bg-white/50 px-2 py-1.5 text-sm text-slate-800 backdrop-blur-sm outline-none focus:ring-2 focus:ring-sky-200"
+              />
+            </label>
+            <label className="text-xs">
+              <span className="block font-semibold text-slate-700">Channels</span>
+              <select
+                value={current.channels}
+                onChange={(e) => {
+                  const c = Number(e.target.value);
+                  const next = { ...current, channels: c };
+                  if (c === 1 && next.normalization === "imagenet") {
+                    next.normalization = "div255";
+                  }
+                  onChange(next);
+                }}
+                className="mt-1 w-full rounded-lg border border-white/60 bg-white/50 px-2 py-1.5 text-sm text-slate-800 backdrop-blur-sm outline-none focus:ring-2 focus:ring-sky-200"
+              >
+                <option value={1}>1 (grayscale)</option>
+                <option value={3}>3 (RGB)</option>
+              </select>
+            </label>
+            <label className="text-xs">
+              <span className="block font-semibold text-slate-700">
+                Layout
+              </span>
+              <select
+                value={current.channel_order}
+                onChange={(e) => set("channel_order", e.target.value)}
+                className="mt-1 w-full rounded-lg border border-white/60 bg-white/50 px-2 py-1.5 text-sm text-slate-800 backdrop-blur-sm outline-none focus:ring-2 focus:ring-sky-200"
+              >
+                <option value="NHWC">NHWC</option>
+                <option value="NCHW">NCHW</option>
+              </select>
+            </label>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-slate-700">Normalization</p>
+            <div className="mt-1 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+              {NORMALIZATION_OPTIONS.map((o) => {
+                const disabled = grayscale && o.value === "imagenet";
+                const tooltip = disabled
+                  ? "ImageNet mean/std are defined for 3-channel RGB images and don't apply to single-channel inputs."
+                  : undefined;
+                return (
+                  <label
+                    key={o.value}
+                    title={tooltip}
+                    className={`flex items-center gap-2 rounded-lg border border-white/60 bg-white/40 px-2.5 py-1.5 text-xs ${
+                      disabled
+                        ? "cursor-not-allowed opacity-50"
+                        : "cursor-pointer hover:bg-white/60"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="normalization"
+                      disabled={disabled}
+                      value={o.value}
+                      checked={current.normalization === o.value}
+                      onChange={(e) => set("normalization", e.target.value)}
+                    />
+                    {o.label}
+                    {disabled && (
+                      <span className="ml-auto text-[10px] text-slate-500">
+                        3-channel only
+                      </span>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-slate-700">Channel order</p>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {COLOR_ORDER_OPTIONS.map((o) => (
+                <label
+                  key={o.value}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg border border-white/60 bg-white/40 px-2.5 py-1.5 text-xs hover:bg-white/60"
+                >
+                  <input
+                    type="radio"
+                    name="channelColorOrder"
+                    value={o.value}
+                    checked={current.channel_color_order === o.value}
+                    onChange={(e) => set("channel_color_order", e.target.value)}
+                  />
+                  {o.label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-slate-700">Interpolation</p>
+            <select
+              value={current.interpolation}
+              onChange={(e) => set("interpolation", e.target.value)}
+              className="mt-1 w-full rounded-lg border border-white/60 bg-white/50 px-2 py-1.5 text-sm text-slate-800 backdrop-blur-sm outline-none focus:ring-2 focus:ring-sky-200"
+            >
+              {INTERPOLATION_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+async function callGeminiWithRetry(prompt, apiKey) {
+  let res = await callGeminiOnce(prompt, apiKey);
+  if (res.status === 503) {
+    await new Promise((r) => setTimeout(r, 3000));
+    res = await callGeminiOnce(prompt, apiKey);
+    if (res.status === 503) {
+      throw new Error("Gemini is currently busy. Please try again in a moment.");
+    }
+  }
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Gemini error ${res.status}: ${t.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  let html = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  html = html
+    .replace(/^\s*```html\s*/i, "")
+    .replace(/^\s*```\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+  if (!html) throw new Error("Empty response from Gemini.");
+  return html;
+}
+
 export default function DeployCloudPage() {
   const location = useLocation();
   const {
@@ -43,6 +369,13 @@ export default function DeployCloudPage() {
     framework,
     modelFile,
     setModelFile,
+    modelType,
+    setModelType,
+    modelTypeDesc,
+    setModelTypeDesc,
+    inputSpec,
+    setInputSpec,
+    inputSpecAuto,
     statusMessage,
     result,
     error,
@@ -60,9 +393,6 @@ export default function DeployCloudPage() {
   const [copied, setCopied] = useState(false);
   const hydratedRef = useRef(false);
 
-  const [showTestModal, setShowTestModal] = useState(false);
-  const [selectedModelType, setSelectedModelType] = useState("");
-  const [otherModelDesc, setOtherModelDesc] = useState("");
   const [generatingTestUI, setGeneratingTestUI] = useState(false);
   const [generatedTestHTML, setGeneratedTestHTML] = useState("");
   const [testGenError, setTestGenError] = useState("");
@@ -95,21 +425,15 @@ export default function DeployCloudPage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const openTestModal = () => {
-    setSelectedModelType("");
-    setOtherModelDesc("");
+  const triggerTestUI = async () => {
     setTestGenError("");
-    setShowTestModal(true);
-  };
-
-  const generateTestUI = async () => {
-    setTestGenError("");
-    if (!selectedModelType) {
-      setTestGenError("Please select a model type.");
+    setGeneratedTestHTML("");
+    if (!apiUrl) {
+      setTestGenError("No deployed API URL available.");
       return;
     }
-    if (selectedModelType === "Other" && !otherModelDesc.trim()) {
-      setTestGenError("Please describe your model.");
+    if (!modelType) {
+      setTestGenError("Model type was not captured at deployment time.");
       return;
     }
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
@@ -119,54 +443,12 @@ export default function DeployCloudPage() {
       );
       return;
     }
-    if (!apiUrl) {
-      setTestGenError("No deployed API URL available.");
-      return;
-    }
 
     setGeneratingTestUI(true);
     try {
-      const typeDesc =
-        selectedModelType === "Other"
-          ? `Other — ${otherModelDesc.trim()}`
-          : selectedModelType;
-
-      const prompt = `Generate a complete, self-contained, single-file HTML document (with ALL CSS and JavaScript inline) that serves as a test interface for an ML model deployed at: ${apiUrl}
-
-Model type: ${typeDesc}
-
-Hard requirements:
-- The HTML must be fully self-contained: no external CSS, no external JS, no CDNs, no <link>, no <script src=>.
-- The page MUST call ${apiUrl}/predict directly via fetch() POST with a JSON body appropriate for the given model type.
-- Provide an input UI suitable for the model type (e.g., file upload + base64/dataURL encoding for images; textarea for text; comma-separated number inputs for tabular/time-series; etc.).
-- Show the prediction result clearly (handle both JSON and text responses; show errors on failure).
-- Use modern, clean styling that works without any external assets. Mobile-friendly.
-- Output ONLY the raw HTML, starting with <!DOCTYPE html>. Do NOT wrap it in markdown code fences. Do NOT add any explanation text.`;
-
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
-        apiKey
-      )}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-        }),
-      });
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(`Gemini error ${res.status}: ${t.slice(0, 300)}`);
-      }
-      const data = await res.json();
-      let html = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      html = html
-        .replace(/^\s*```html\s*/i, "")
-        .replace(/^\s*```\s*/i, "")
-        .replace(/\s*```\s*$/i, "")
-        .trim();
-      if (!html) throw new Error("Empty response from Gemini.");
+      const prompt = buildGeminiPrompt({ apiUrl, modelType, modelTypeDesc });
+      const html = await callGeminiWithRetry(prompt, apiKey);
       setGeneratedTestHTML(html);
-      setShowTestModal(false);
     } catch (e) {
       setTestGenError(e?.message || String(e));
     } finally {
@@ -304,9 +586,61 @@ Hard requirements:
             <p className="mt-1 break-all font-mono text-slate-600">{previewLine}</p>
           </div>
 
+          <div>
+            <label className="text-sm font-semibold text-slate-800">Model type</label>
+            <p className="mt-1 text-xs text-slate-500">
+              Required — drives the generated /predict schema and Gradio input widget.
+            </p>
+            <div className="mt-2 grid max-h-64 grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+              {MODEL_TYPE_OPTIONS.map((t) => (
+                <label
+                  key={t}
+                  className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm backdrop-blur-sm transition-colors ${
+                    modelType === t
+                      ? "border-sky-300 bg-sky-50/70 text-slate-800"
+                      : "border-white/60 bg-white/40 text-slate-700 hover:bg-white/60"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="deployModelType"
+                    value={t}
+                    checked={modelType === t}
+                    onChange={(e) => setModelType(e.target.value)}
+                  />
+                  {t}
+                </label>
+              ))}
+            </div>
+            {modelType === "Other" && (
+              <textarea
+                value={modelTypeDesc}
+                onChange={(e) => setModelTypeDesc(e.target.value)}
+                placeholder="Describe your model — inputs, outputs, expected request shape…"
+                rows={3}
+                className="mt-3 w-full rounded-xl border border-white/60 bg-white/50 p-3 text-sm text-slate-800 backdrop-blur-sm outline-none focus:ring-2 focus:ring-sky-200"
+              />
+            )}
+          </div>
+
+          {IMAGE_TYPES.has(modelType) && (
+            <InputSpecPanel
+              spec={inputSpec}
+              auto={inputSpecAuto}
+              onChange={setInputSpec}
+            />
+          )}
+
           {error && <p className="text-sm text-red-600">{error}</p>}
 
-          <button type="button" onClick={() => confirmDeploy()} className="btn-primary w-full">
+          <button
+            type="button"
+            onClick={() => confirmDeploy()}
+            disabled={
+              !modelType || (modelType === "Other" && !modelTypeDesc.trim())
+            }
+            className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-50"
+          >
             ✅ Confirm &amp; Deploy
           </button>
         </div>
@@ -407,13 +741,38 @@ Hard requirements:
               <Copy className="mr-1 h-4 w-4" />
               {copied ? "Copied!" : "Copy URL"}
             </button>
-            <button type="button" onClick={openTestModal} className="btn-ghost">
-              Test Deployment
+            <button
+              type="button"
+              onClick={triggerTestUI}
+              disabled={generatingTestUI}
+              className="btn-ghost disabled:opacity-50"
+            >
+              {generatingTestUI ? (
+                <>
+                  <Loader2 className="mr-1 inline h-4 w-4 animate-spin" />
+                  Generating…
+                </>
+              ) : (
+                "Test Deployment"
+              )}
             </button>
             <button type="button" onClick={() => reset()} className="btn-primary">
               Deploy Another Model
             </button>
           </div>
+
+          {modelType && (
+            <p className="text-xs text-slate-500">
+              Model type:{" "}
+              <span className="font-semibold text-slate-700">{modelType}</span>
+              {modelType === "Other" && modelTypeDesc
+                ? ` — ${modelTypeDesc}`
+                : null}
+            </p>
+          )}
+          {testGenError && (
+            <p className="text-sm text-red-600">{testGenError}</p>
+          )}
 
           {generatedTestHTML && (
             <div className="space-y-3 pt-2">
@@ -438,72 +797,6 @@ Hard requirements:
         </div>
       )}
 
-      {showTestModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className={`${CARD} w-full max-w-md space-y-4`}>
-            <h3 className="text-lg font-bold text-slate-800">Generate Test Interface</h3>
-            <p className="text-sm text-slate-600">
-              What kind of model is this? We&apos;ll generate a test page tailored to that type.
-            </p>
-            <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
-              {MODEL_TYPE_OPTIONS.map((t) => (
-                <label
-                  key={t}
-                  className="flex cursor-pointer items-center gap-2 rounded-lg border border-white/60 bg-white/40 px-3 py-2 text-sm text-slate-700 backdrop-blur-sm hover:bg-white/60"
-                >
-                  <input
-                    type="radio"
-                    name="modelType"
-                    value={t}
-                    checked={selectedModelType === t}
-                    onChange={(e) => setSelectedModelType(e.target.value)}
-                  />
-                  {t}
-                </label>
-              ))}
-            </div>
-            {selectedModelType === "Other" && (
-              <textarea
-                value={otherModelDesc}
-                onChange={(e) => setOtherModelDesc(e.target.value)}
-                placeholder="Describe your model — inputs, outputs, expected request shape…"
-                rows={3}
-                className="w-full rounded-xl border border-white/60 bg-white/50 p-3 text-sm text-slate-800 backdrop-blur-sm outline-none focus:ring-2 focus:ring-sky-200"
-              />
-            )}
-            {testGenError && <p className="text-sm text-red-600">{testGenError}</p>}
-            <div className="flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setShowTestModal(false)}
-                disabled={generatingTestUI}
-                className="btn-ghost"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={generateTestUI}
-                disabled={generatingTestUI}
-                className="btn-primary"
-              >
-                {generatingTestUI ? (
-                  <>
-                    <Loader2 className="mr-1 inline h-4 w-4 animate-spin" />
-                    Generating…
-                  </>
-                ) : (
-                  "Generate"
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

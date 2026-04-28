@@ -90,16 +90,6 @@ def build_main_py(model_filename: str, meta: dict[str, Any]) -> str:
 
     is_xgb_booster = framework == "xgboost" and estimator.endswith("Booster")
 
-    proba_lines = ""
-    if has_proba and not is_xgb_booster:
-        proba_lines = textwrap.dedent(
-            """
-            if hasattr(model, "predict_proba"):
-                proba = model.predict_proba(X)
-                out["proba"] = proba.tolist() if hasattr(proba, "tolist") else proba
-            """
-        ).strip("\n")
-
     if is_xgb_booster:
         predict_try_body = textwrap.dedent(
             """
@@ -110,17 +100,34 @@ def build_main_py(model_filename: str, meta: dict[str, Any]) -> str:
             return out
             """
         ).strip("\n")
-    else:
-        core = textwrap.dedent(
+    elif has_proba:
+        predict_try_body = textwrap.dedent(
             """
             preds = model.predict(X)
             pred = preds[0] if hasattr(preds, "__len__") and len(preds) == 1 else preds
+            proba = model.predict_proba(X)
+            proba_arr = np.asarray(proba)
+            if proba_arr.ndim == 2 and proba_arr.shape[0] == 1 and proba_arr.shape[1] >= 2:
+                row = proba_arr[0]
+                idx = int(np.argmax(row))
+                return {
+                    "predicted_class": idx,
+                    "confidence": float(row[idx]),
+                    "all_probabilities": row.tolist(),
+                }
             out = {"prediction": pred.tolist() if hasattr(pred, "tolist") else pred}
+            out["proba"] = proba_arr.tolist()
+            return out
             """
         ).strip("\n")
-        if proba_lines:
-            core += "\n" + proba_lines
-        predict_try_body = core + "\nreturn out"
+    else:
+        predict_try_body = textwrap.dedent(
+            """
+            preds = model.predict(X)
+            pred = preds[0] if hasattr(preds, "__len__") and len(preds) == 1 else preds
+            return {"prediction": pred.tolist() if hasattr(pred, "tolist") else pred}
+            """
+        ).strip("\n")
 
     main = f'''"""
 Auto-generated inference API for classical ML ({framework}).
@@ -240,6 +247,15 @@ def predict(req: PredictRequest) -> dict[str, Any]:
         with torch.no_grad():
             y = model(x)
         arr = y.detach().cpu().numpy()
+        sq = np.squeeze(arr)
+        if sq.ndim == 1 and sq.size >= 2:
+            if np.all(sq >= 0.0) and np.all(sq <= 1.0) and abs(float(sq.sum()) - 1.0) < 1e-3:
+                idx = int(np.argmax(sq))
+                return {{
+                    "predicted_class": idx,
+                    "confidence": float(sq[idx]),
+                    "all_probabilities": sq.tolist(),
+                }}
         return {{"prediction": arr.tolist()}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -301,6 +317,18 @@ def predict(req: PredictRequest) -> dict[str, Any]:
     try:
         x = np.asarray([req.features], dtype=np.float32)
         outputs = session.run(None, {{input_name: x}})
+        if len(outputs) == 1:
+            arr = np.asarray(outputs[0])
+            sq = np.squeeze(arr)
+            if sq.ndim == 1 and sq.size >= 2:
+                if np.all(sq >= 0.0) and np.all(sq <= 1.0) and abs(float(sq.sum()) - 1.0) < 1e-3:
+                    idx = int(np.argmax(sq))
+                    return {{
+                        "predicted_class": idx,
+                        "confidence": float(sq[idx]),
+                        "all_probabilities": sq.tolist(),
+                    }}
+            return {{"prediction": arr.tolist()}}
         values = [o.tolist() if hasattr(o, "tolist") else o for o in outputs]
         return {{"prediction": values}}
     except Exception as e:
@@ -454,7 +482,19 @@ def predict(req: PredictRequest) -> dict[str, Any]:
         started = time.time()
         x = np.asarray([req.features], dtype=np.float32)
         y = model.predict(x, verbose=0)
-        return {{"prediction": y.tolist() if hasattr(y, "tolist") else y, "latency_ms": round((time.time() - started) * 1000, 2)}}
+        latency_ms = round((time.time() - started) * 1000, 2)
+        arr = np.asarray(y)
+        sq = np.squeeze(arr)
+        if sq.ndim == 1 and sq.size >= 2:
+            if np.all(sq >= 0.0) and np.all(sq <= 1.0) and abs(float(sq.sum()) - 1.0) < 1e-3:
+                idx = int(np.argmax(sq))
+                return {{
+                    "predicted_class": idx,
+                    "confidence": float(sq[idx]),
+                    "all_probabilities": sq.tolist(),
+                    "latency_ms": latency_ms,
+                }}
+        return {{"prediction": arr.tolist() if hasattr(arr, "tolist") else y, "latency_ms": latency_ms}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 '''
