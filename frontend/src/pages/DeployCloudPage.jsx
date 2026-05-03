@@ -42,6 +42,7 @@ const IMAGE_TYPES = new Set([
 function buildGeminiPrompt({ apiUrl, modelType, modelTypeDesc }) {
   const isImage = IMAGE_TYPES.has(modelType);
   const isSegmentation = modelType === "Image Segmentation";
+  const isObjectDetection = modelType === "Object Detection";
 
   const schemaByType = {
     "Tabular/Regression": '{"features": [<number>, <number>, ...]}',
@@ -51,22 +52,39 @@ function buildGeminiPrompt({ apiUrl, modelType, modelTypeDesc }) {
     "Image Segmentation":
       '{"image": "<base64-encoded image bytes, no data: prefix>", "size": <int, optional>}',
     "Object Detection":
-      '{"image": "<base64-encoded image bytes, no data: prefix>", "size": <int, optional>}',
+      '{"image": "<base64-encoded image bytes, no data: prefix>"}',
     "Text Classification": '{"text": "<string>"}',
     Other: '{"data": "<string>"}',
   };
 
-  const responseHint = isSegmentation
-    ? 'The response is JSON: {"mask_png_base64": "<base64 PNG>", "shape": [H, W], "input_size": [H, W]}. Render mask_png_base64 inside an <img src="data:image/png;base64,..."> element so the user sees the predicted segmentation mask. Also display shape and input_size as text alongside the image.'
-    : isImage
-      ? 'The response is JSON: {"prediction": <array>, "input_size": [H, W]}. Display the prediction array (formatted readably) and input_size.'
-      : "The response is JSON. Display the prediction clearly. On error, show the JSON error body.";
+  let responseHint;
+  if (isSegmentation) {
+    responseHint =
+      'The response is JSON: {"mask_png_base64": "<base64 PNG>", "shape": [H, W], "input_size": [H, W]}. Render mask_png_base64 inside an <img src="data:image/png;base64,..."> element so the user sees the predicted segmentation mask. Also display shape and input_size as text alongside the image.';
+  } else if (isObjectDetection) {
+    responseHint =
+      'The response is JSON with EXACTLY this shape: {"detections": [{"class": <string>, "confidence": <float in 0..1>, "bbox": [x1, y1, x2, y2]}, ...]}. ' +
+      'Do NOT expect "prediction" or "input_size" keys — they are not present for Object Detection models. If you see them, you have the wrong schema. ' +
+      'Render each detection as its own card showing: (1) the class name in bold, (2) confidence as a percentage with one decimal (e.g. multiply confidence by 100 and append "%", so 0.874 → "87.4%"), (3) the bounding box as "bbox: [x1, y1, x2, y2]" with the four numbers rounded to integers. ' +
+      'If detections is an empty array, render the text "No objects detected." instead of an empty list. ' +
+      'On error, show the JSON error body.';
+  } else if (isImage) {
+    responseHint =
+      'The response is JSON: {"prediction": <array>, "input_size": [H, W]}. Display the prediction array (formatted readably) and input_size.';
+  } else {
+    responseHint =
+      "The response is JSON. Display the prediction clearly. On error, show the JSON error body.";
+  }
 
-  const imageNotes = isImage
-    ? `\nFor the image input: include a file picker that converts the chosen file to base64 (strip the "data:image/...;base64," prefix before sending). Include a NUMERIC RESIZE INPUT labeled "Resize" defaulting to ${
-        isSegmentation ? 256 : 224
-      }. Display a visible warning under the resize input that reads exactly: "Value must be divisible by 32." Send {"image": <base64>, "size": <number>} as the POST body.`
-    : "";
+  let imageNotes = "";
+  if (isObjectDetection) {
+    imageNotes =
+      '\nFor the image input: include a file picker that converts the chosen file to base64 (strip the "data:image/...;base64," prefix before sending). Do NOT include a resize input — Object Detection models handle their own preprocessing. Send EXACTLY {"image": <base64>} as the POST body (no "size" key).';
+  } else if (isImage) {
+    imageNotes = `\nFor the image input: include a file picker that converts the chosen file to base64 (strip the "data:image/...;base64," prefix before sending). Include a NUMERIC RESIZE INPUT labeled "Resize" defaulting to ${
+      isSegmentation ? 256 : 224
+    }. Display a visible warning under the resize input that reads exactly: "Value must be divisible by 32." Send {"image": <base64>, "size": <number>} as the POST body.`;
+  }
 
   const typeDescription =
     modelType === "Other"

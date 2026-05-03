@@ -13,7 +13,10 @@
       "Bash(node_modules/.bin/esbuild src/pages/DeployCloudPage.jsx src/hooks/useCloudDeploy.js --loader:.jsx=jsx --loader:.js=jsx --bundle=false --log-level=warning)",
       "Bash(node_modules/.bin/esbuild src/pages/DeployCloudPage.jsx --loader:.jsx=jsx --bundle=false --log-level=warning)",
       "Bash(node_modules/.bin/esbuild src/hooks/useCloudDeploy.js --loader:.js=jsx --bundle=false --log-level=warning)",
-      "Bash(pip show *)"
+      "Bash(pip show *)",
+      "Bash(npx --yes esbuild src/pages/DeployCloudPage.jsx --loader=jsx --bundle=false)",
+      "Bash(npx --yes esbuild src/pages/DeployCloudPage.jsx \"--loader:.jsx=jsx\" --bundle=false)",
+      "Bash(node --input-type=module -e ' *)"
     ]
   }
 }
