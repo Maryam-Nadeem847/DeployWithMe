@@ -845,9 +845,13 @@ def deploy_to_huggingface(
                 ),
             }
 
-        # 6. Poll until RUNNING (timeout 5 min)
+        # 6. Poll until RUNNING. YOLO pulls ultralytics + yolov5 + torch
+        #    (~3GB) so it routinely needs 5-10 min on a cold HF builder; the
+        #    default 5 min is too tight. Other frameworks keep the original
+        #    budget. NB: the build keeps running on HF even after we stop
+        #    polling — the timeout governs only how long *we* wait.
+        timeout = 900 if framework == "yolo" else 300
         update("building", "HuggingFace is building your Space...")
-        timeout = 300
         start = time.time()
         while time.time() - start < timeout:
             runtime = api.get_space_runtime(repo_id, token=hf_token)
@@ -863,7 +867,7 @@ def deploy_to_huggingface(
             return {
                 "status": "failed",
                 "error": (
-                    "Timeout: Space took over 5 minutes. "
+                    f"Timeout: Space took over {timeout // 60} minutes. "
                     f"Check manually: https://huggingface.co/spaces/{repo_id}"
                 ),
             }
