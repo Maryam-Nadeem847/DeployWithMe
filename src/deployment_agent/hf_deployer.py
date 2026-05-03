@@ -193,6 +193,14 @@ def _framework_pieces(framework: str, model_filename: str) -> dict:
             "text_invoke_api": 'session.run(None, {input_name: np.array([req.text])})[0]',
             "text_invoke_ui": 'session.run(None, {input_name: np.array([input_text])})[0]',
         }
+    if framework == "yolo":
+        return {
+            "imports": "from ultralytics import YOLO\nimport numpy as np",
+            "load_code": f'model = YOLO("{model_filename}")',
+            "predict_array_helper": "",
+            "text_invoke_api": "",
+            "text_invoke_ui": "",
+        }
     # fallback
     return {
         "imports": "import joblib\nimport numpy as np",
@@ -237,6 +245,72 @@ def _segmentation_output_block() -> str:
             "input_size": [height_used, width_used],
         }
         """)
+
+
+def _build_yolo_bodies() -> tuple[str, str]:
+    """Return (api_predict_body, ui_predict_body) for Ultralytics YOLO models.
+
+    YOLO does its own preprocessing (letterbox / normalization), so we just
+    feed it a PIL image and parse the Results object.
+    """
+    api_body = textwrap.dedent("""\
+        try:
+            img_bytes = base64.b64decode(req.image)
+            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            results = model(img, verbose=False)
+            result = results[0]
+            boxes = result.boxes
+            names = result.names
+            detections = []
+            if boxes is not None and len(boxes) > 0:
+                xyxy = boxes.xyxy.cpu().numpy()
+                conf = boxes.conf.cpu().numpy()
+                cls = boxes.cls.cpu().numpy().astype(int)
+                for box, score, c in zip(xyxy, conf, cls):
+                    label = names.get(int(c), str(c)) if isinstance(names, dict) else str(c)
+                    detections.append({
+                        "class": label,
+                        "confidence": float(score),
+                        "bbox": [float(v) for v in box],
+                    })
+            return {"detections": detections}
+        except Exception as exc:
+            tb_lines = traceback.format_exc().splitlines()[-10:]
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": str(exc),
+                    "type": type(exc).__name__,
+                    "traceback": tb_lines,
+                },
+            )
+        """)
+
+    ui_body = textwrap.dedent("""\
+        try:
+            if input_image is None:
+                return "No image provided."
+            img = input_image.convert("RGB") if input_image.mode != "RGB" else input_image
+            results = model(img, verbose=False)
+            result = results[0]
+            boxes = result.boxes
+            names = result.names
+            if boxes is None or len(boxes) == 0:
+                return "No objects detected."
+            xyxy = boxes.xyxy.cpu().numpy()
+            conf = boxes.conf.cpu().numpy()
+            cls = boxes.cls.cpu().numpy().astype(int)
+            lines = []
+            for box, score, c in zip(xyxy, conf, cls):
+                label = names.get(int(c), str(c)) if isinstance(names, dict) else str(c)
+                x1, y1, x2, y2 = [float(v) for v in box]
+                lines.append(f"{label}: {score:.3f}  bbox=[{x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f}]")
+            return "\\n".join(lines)
+        except Exception as exc:
+            return f"Error: {exc}"
+        """)
+
+    return api_body, ui_body
 
 
 def _build_image_bodies(spec: dict, is_segmentation: bool) -> tuple[str, str]:
@@ -310,7 +384,12 @@ def generate_gradio_app(
     channel_order/normalization/channel_color_order/interpolation) is baked
     directly into the preprocessing block — no runtime guessing.
     """
-    mt = (model_type or "Tabular/Regression").strip()
+    is_yolo = framework == "yolo"
+    if is_yolo:
+        # YOLO is image-only; its own preprocessing handles size/layout.
+        mt = "Object Detection"
+    else:
+        mt = (model_type or "Tabular/Regression").strip()
     is_image = mt in IMAGE_MODEL_TYPES
     is_segmentation = mt == "Image Segmentation"
     is_text = mt == "Text Classification"
@@ -325,10 +404,18 @@ def generate_gradio_app(
     text_invoke_ui = pieces["text_invoke_ui"]
 
     extra_imports = "from typing import List, Optional"
-    if is_image:
+    if is_image or is_yolo:
         extra_imports += "\nimport base64\nimport io\nimport traceback\nfrom PIL import Image"
 
-    if is_image:
+    if is_yolo:
+        api_predict_body, ui_predict_body = _build_yolo_bodies()
+        ui_input_widget = 'gr.Image(type="pil", label="Upload image")'
+        ui_input_param = "input_image"
+        schema_class = (
+            "class PredictRequest(BaseModel):\n"
+            "    image: str  # base64-encoded image bytes\n"
+        )
+    elif is_image:
         spec = _normalize_spec(input_spec, framework=framework, is_segmentation=is_segmentation)
         api_predict_body, ui_predict_body = _build_image_bodies(
             spec=spec,
@@ -421,8 +508,40 @@ def generate_gradio_app(
 
     title = f"{framework} — {mt}"
 
+    gradio_client_schema_patch = (
+        "# --- gradio_client schema-walker compatibility patch -------------------\n"
+        "# Pydantic 2 / FastAPI emit JSON Schemas containing boolean sub-schemas\n"
+        "# (valid per JSON Schema spec; e.g. additionalProperties: false). All\n"
+        "# released gradio_client versions assume every schema node is a dict and\n"
+        "# call `if \"x\" in schema:` inside get_type / _json_schema_to_python_type.\n"
+        "# That raises `TypeError: argument of type 'bool' is not iterable` when\n"
+        "# Gradio's homepage calls /info, returning 500 on every request to /.\n"
+        "# Wrap the walker so non-dict schemas degrade to 'Any' instead of crashing.\n"
+        "import gradio_client.utils as _gc_utils\n"
+        "\n"
+        "def _bool_safe_schema(fn):\n"
+        "    def wrapper(schema, *args, **kwargs):\n"
+        "        if not isinstance(schema, dict):\n"
+        "            return \"Any\"\n"
+        "        return fn(schema, *args, **kwargs)\n"
+        "    return wrapper\n"
+        "\n"
+        "if hasattr(_gc_utils, \"get_type\"):\n"
+        "    _gc_utils.get_type = _bool_safe_schema(_gc_utils.get_type)\n"
+        "if hasattr(_gc_utils, \"_json_schema_to_python_type\"):\n"
+        "    _gc_utils._json_schema_to_python_type = _bool_safe_schema(\n"
+        "        _gc_utils._json_schema_to_python_type\n"
+        "    )\n"
+        "if hasattr(_gc_utils, \"json_schema_to_python_type\"):\n"
+        "    _gc_utils.json_schema_to_python_type = _bool_safe_schema(\n"
+        "        _gc_utils.json_schema_to_python_type\n"
+        "    )\n"
+        "# ----------------------------------------------------------------------\n"
+    )
+
     return (
-        framework_imports + "\n"
+        gradio_client_schema_patch + "\n"
+        + framework_imports + "\n"
         + extra_imports + "\n"
         + "import gradio as gr\n"
         + "import uvicorn\n"
@@ -468,6 +587,7 @@ def generate_requirements(
     HF_PINNED = [
         "gradio==5.16.0",
         "huggingface_hub>=0.26.0",
+        "requests",
     ]
     if framework in ("sklearn", "joblib"):
         sklearn_pin = f"scikit-learn=={sklearn_version}" if sklearn_version else "scikit-learn"
@@ -478,25 +598,51 @@ def generate_requirements(
         pkgs = ["tensorflow-cpu", "h5py", "numpy"]
     elif framework == "onnx":
         pkgs = ["onnxruntime", "numpy"]
+    elif framework == "yolo":
+        # ultralytics pulls torch, opencv-python, pyyaml, matplotlib, etc.
+        # opencv-python imports libxcb (GUI) at runtime and crashes in headless
+        # containers. We declare opencv-python-headless here AND force-reinstall
+        # it as a final Dockerfile step so it overwrites opencv-python's cv2/.
+        pkgs = ["ultralytics", "opencv-python-headless", "Pillow", "numpy"]
     else:
         pkgs = ["numpy"]
 
     if (model_type or "") in IMAGE_MODEL_TYPES:
         pkgs.append("Pillow")
 
-    return "\n".join(HF_PINNED + pkgs)
+    # Dedupe while preserving order.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for pkg in HF_PINNED + pkgs:
+        if pkg not in seen:
+            seen.add(pkg)
+            deduped.append(pkg)
+    return "\n".join(deduped)
 
 
-def generate_dockerfile() -> str:
-    """Dockerfile for sdk="docker" HF Spaces — we control the full environment."""
-    return """FROM python:3.11-slim
+def generate_dockerfile(framework: str = "") -> str:
+    """Dockerfile for sdk="docker" HF Spaces — we control the full environment.
+
+    For YOLO deployments, ultralytics hard-requires opencv-python (which needs
+    libxcb / libGL — not present in slim containers). After the main install
+    we force-reinstall opencv-python-headless with --no-deps so it overwrites
+    cv2/ in site-packages. This is independent of pip resolver order.
+    """
+    base = """FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+"""
+    if framework == "yolo":
+        base += (
+            "RUN pip install --no-cache-dir --force-reinstall --no-deps "
+            "opencv-python-headless\n"
+        )
+    base += """COPY . .
 CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
 """
+    return base
 
 
 def generate_readme(space_name: str, framework: str) -> str:
@@ -535,6 +681,10 @@ def deploy_to_huggingface(
         if progress_callback:
             progress_callback(step, msg)
 
+    # YOLO is image-only Object Detection regardless of what the caller asked for.
+    if framework == "yolo":
+        model_type = "Object Detection"
+
     try:
         # 1. Validate token + get username
         update("validating", "Validating HuggingFace token...")
@@ -572,7 +722,7 @@ def deploy_to_huggingface(
             sklearn_version=sklearn_version,
         )
         readme_content = generate_readme(final_name, framework)
-        dockerfile_content = generate_dockerfile()
+        dockerfile_content = generate_dockerfile(framework=framework)
 
         # 5. Upload all files in a single atomic commit. Separate upload_file
         #    calls each create their own commit and HF kicks off a build on

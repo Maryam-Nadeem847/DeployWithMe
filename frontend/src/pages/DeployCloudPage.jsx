@@ -90,15 +90,36 @@ Hard requirements:
 - Output ONLY the raw HTML, starting with <!DOCTYPE html>. No markdown fences, no explanation.`;
 }
 
-async function callGeminiOnce(prompt, apiKey) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
-    apiKey
-  )}`;
+const GEMINI_PRIMARY_MODEL = "gemini-2.5-flash";
+const GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite";
+
+async function callGeminiOnce(prompt, apiKey, model) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model
+  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
   return fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
   });
+}
+
+async function extractHtmlFromGeminiResponse(res, modelLabel) {
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(
+      `Gemini (${modelLabel}) error ${res.status}: ${t.slice(0, 300)}`
+    );
+  }
+  const data = await res.json();
+  let html = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  html = html
+    .replace(/^\s*```html\s*/i, "")
+    .replace(/^\s*```\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+  if (!html) throw new Error(`Empty response from Gemini (${modelLabel}).`);
+  return html;
 }
 
 const NORMALIZATION_OPTIONS = [
@@ -333,28 +354,17 @@ function InputSpecPanel({ spec, auto, onChange }) {
   );
 }
 
-async function callGeminiWithRetry(prompt, apiKey) {
-  let res = await callGeminiOnce(prompt, apiKey);
-  if (res.status === 503) {
-    await new Promise((r) => setTimeout(r, 3000));
-    res = await callGeminiOnce(prompt, apiKey);
-    if (res.status === 503) {
-      throw new Error("Gemini is currently busy. Please try again in a moment.");
-    }
+async function callGeminiWithFallback(prompt, apiKey) {
+  const primary = await callGeminiOnce(prompt, apiKey, GEMINI_PRIMARY_MODEL);
+  if (primary.status !== 503) {
+    return extractHtmlFromGeminiResponse(primary, GEMINI_PRIMARY_MODEL);
   }
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Gemini error ${res.status}: ${t.slice(0, 300)}`);
+  // Primary model is overloaded — fall back to the lite model immediately.
+  const fallback = await callGeminiOnce(prompt, apiKey, GEMINI_FALLBACK_MODEL);
+  if (fallback.status === 503) {
+    throw new Error("Gemini is currently busy. Please try again in a moment.");
   }
-  const data = await res.json();
-  let html = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  html = html
-    .replace(/^\s*```html\s*/i, "")
-    .replace(/^\s*```\s*/i, "")
-    .replace(/\s*```\s*$/i, "")
-    .trim();
-  if (!html) throw new Error("Empty response from Gemini.");
-  return html;
+  return extractHtmlFromGeminiResponse(fallback, GEMINI_FALLBACK_MODEL);
 }
 
 export default function DeployCloudPage() {
@@ -447,7 +457,7 @@ export default function DeployCloudPage() {
     setGeneratingTestUI(true);
     try {
       const prompt = buildGeminiPrompt({ apiUrl, modelType, modelTypeDesc });
-      const html = await callGeminiWithRetry(prompt, apiKey);
+      const html = await callGeminiWithFallback(prompt, apiKey);
       setGeneratedTestHTML(html);
     } catch (e) {
       setTestGenError(e?.message || String(e));

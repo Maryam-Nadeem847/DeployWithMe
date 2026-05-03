@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -25,9 +26,14 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.formparsers import MultiPartParser
 
 from deployment_agent.docker_ops import docker_rmi_force, docker_rm_force, run_cmd
 from deployment_agent.hf_deployer import deploy_to_huggingface, generate_space_name
+
+# Starlette caps each multipart part at 1 MB by default. Model files routinely
+# run into hundreds of MB, so raise the cap before any routes parse uploads.
+MultiPartParser.max_part_size = 1024 * 1024 * 1024  # 1 GB
 
 logger = logging.getLogger(__name__)
 
@@ -429,6 +435,11 @@ async def deploy_cloud(
     model_path.write_bytes(content)
 
     detection = inspect_model_file(model_path)
+    if detection.get("deployable", True) is False:
+        # Clean up the uploaded file: no job will be created so nothing else owns the temp dir.
+        shutil.rmtree(tmp, ignore_errors=True)
+        reason = detection.get("reason") or detection.get("detail") or "Model is not deployable."
+        raise HTTPException(status_code=400, detail=reason)
     framework = detection.get("framework", "unknown")
     sklearn_version = detection.get("sklearn_version")
     input_spec_auto = extract_input_spec(model_path, framework)

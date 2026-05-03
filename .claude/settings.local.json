@@ -12,7 +12,8 @@
       "Bash(npx --no-install vite --version)",
       "Bash(node_modules/.bin/esbuild src/pages/DeployCloudPage.jsx src/hooks/useCloudDeploy.js --loader:.jsx=jsx --loader:.js=jsx --bundle=false --log-level=warning)",
       "Bash(node_modules/.bin/esbuild src/pages/DeployCloudPage.jsx --loader:.jsx=jsx --bundle=false --log-level=warning)",
-      "Bash(node_modules/.bin/esbuild src/hooks/useCloudDeploy.js --loader:.js=jsx --bundle=false --log-level=warning)"
+      "Bash(node_modules/.bin/esbuild src/hooks/useCloudDeploy.js --loader:.js=jsx --bundle=false --log-level=warning)",
+      "Bash(pip show *)"
     ]
   }
 }
