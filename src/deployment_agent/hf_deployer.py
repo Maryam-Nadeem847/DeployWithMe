@@ -227,7 +227,21 @@ def _framework_pieces(framework: str, model_filename: str) -> dict:
                 "            _val = getattr(_hf_errors, _name, None)\n"
                 "        if _val is not None:\n"
                 "            setattr(_shim, _name, _val)\n"
-                "    sys.modules['huggingface_hub.utils._errors'] = _shim"
+                "    sys.modules['huggingface_hub.utils._errors'] = _shim\n"
+                "\n"
+                "# torch.load weights_only compat. PyTorch 2.6 flipped the default of\n"
+                "# weights_only from False to True. ultralytics's DetectMultiBackend\n"
+                "# and yolov5's attempt_load both call torch.load(...) without that\n"
+                "# kwarg, which now refuses to deserialize the model classes baked\n"
+                "# into legacy YOLO checkpoints (e.g. models.yolo.DetectionModel).\n"
+                "# Restore the old default — the user explicitly chose this file for\n"
+                "# deployment, so trust is established at upload time.\n"
+                "import torch as _torch\n"
+                "_orig_torch_load = _torch.load\n"
+                "def _torch_load_compat(*args, **kwargs):\n"
+                "    kwargs.setdefault('weights_only', False)\n"
+                "    return _orig_torch_load(*args, **kwargs)\n"
+                "_torch.load = _torch_load_compat"
             ),
             "load_code": (
                 'MODEL_BACKEND = "ultralytics"\n'
