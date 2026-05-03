@@ -195,7 +195,40 @@ def _framework_pieces(framework: str, model_filename: str) -> dict:
         }
     if framework == "yolo":
         return {
-            "imports": "import numpy as np",
+            "imports": (
+                "import sys\n"
+                "import types\n"
+                "import numpy as np\n"
+                "\n"
+                "# huggingface_hub compat shim. Both ultralytics (DetectMultiBackend)\n"
+                "# and the yolov5 PyPI package do `from huggingface_hub.utils._errors\n"
+                "# import RepositoryNotFoundError`. That private submodule was removed\n"
+                "# in huggingface_hub 0.28+; errors live at huggingface_hub.errors and\n"
+                "# are re-exported at huggingface_hub.utils. Recreate the missing\n"
+                "# module so the legacy imports keep working without pinning hf_hub.\n"
+                "try:\n"
+                "    import huggingface_hub.utils._errors  # noqa: F401\n"
+                "except ImportError:\n"
+                "    import huggingface_hub.utils as _hf_utils\n"
+                "    try:\n"
+                "        import huggingface_hub.errors as _hf_errors\n"
+                "    except ImportError:\n"
+                "        _hf_errors = None\n"
+                "    _shim = types.ModuleType('huggingface_hub.utils._errors')\n"
+                "    for _name in (\n"
+                "        'RepositoryNotFoundError', 'RevisionNotFoundError',\n"
+                "        'EntryNotFoundError', 'LocalEntryNotFoundError',\n"
+                "        'BadRequestError', 'HfHubHTTPError',\n"
+                "        'OfflineModeIsEnabled', 'GatedRepoError',\n"
+                "        'DisabledRepoError',\n"
+                "    ):\n"
+                "        _val = getattr(_hf_utils, _name, None)\n"
+                "        if _val is None and _hf_errors is not None:\n"
+                "            _val = getattr(_hf_errors, _name, None)\n"
+                "        if _val is not None:\n"
+                "            setattr(_shim, _name, _val)\n"
+                "    sys.modules['huggingface_hub.utils._errors'] = _shim"
+            ),
             "load_code": (
                 'MODEL_BACKEND = "ultralytics"\n'
                 "try:\n"
