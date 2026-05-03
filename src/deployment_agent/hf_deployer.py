@@ -195,9 +195,48 @@ def _framework_pieces(framework: str, model_filename: str) -> dict:
         }
     if framework == "yolo":
         return {
-            "imports": "from ultralytics import YOLO\nimport numpy as np",
-            "load_code": f'model = YOLO("{model_filename}")',
-            "predict_array_helper": "",
+            "imports": "import numpy as np",
+            "load_code": (
+                'MODEL_BACKEND = "ultralytics"\n'
+                "try:\n"
+                "    from ultralytics import YOLO as _UltraYOLO\n"
+                f'    model = _UltraYOLO("{model_filename}")\n'
+                "except TypeError as _ultra_exc:\n"
+                '    if "YOLOv5" in str(_ultra_exc):\n'
+                "        import yolov5 as _yolov5\n"
+                f'        model = _yolov5.load("{model_filename}")\n'
+                '        MODEL_BACKEND = "yolov5"\n'
+                "    else:\n"
+                "        raise"
+            ),
+            "predict_array_helper": (
+                "def _yolo_run(img):\n"
+                "    if MODEL_BACKEND == 'ultralytics':\n"
+                "        results = model(img, verbose=False)\n"
+                "        result = results[0]\n"
+                "        boxes = result.boxes\n"
+                "        names = result.names\n"
+                "        if boxes is None or len(boxes) == 0:\n"
+                "            return [], names\n"
+                "        xyxy = boxes.xyxy.cpu().numpy()\n"
+                "        conf = boxes.conf.cpu().numpy()\n"
+                "        cls = boxes.cls.cpu().numpy().astype(int)\n"
+                "        return list(zip(xyxy, conf, cls)), names\n"
+                "    # yolov5 backend: results.xyxy[0] is [N, 6] tensor\n"
+                "    results = model(img)\n"
+                "    names = results.names\n"
+                "    preds = results.xyxy[0]\n"
+                "    if hasattr(preds, 'cpu'):\n"
+                "        preds = preds.cpu().numpy()\n"
+                "    else:\n"
+                "        preds = np.asarray(preds)\n"
+                "    if preds.size == 0:\n"
+                "        return [], names\n"
+                "    xyxy = preds[:, :4]\n"
+                "    conf = preds[:, 4]\n"
+                "    cls = preds[:, 5].astype(int)\n"
+                "    return list(zip(xyxy, conf, cls)), names\n"
+            ),
             "text_invoke_api": "",
             "text_invoke_ui": "",
         }
@@ -248,31 +287,24 @@ def _segmentation_output_block() -> str:
 
 
 def _build_yolo_bodies() -> tuple[str, str]:
-    """Return (api_predict_body, ui_predict_body) for Ultralytics YOLO models.
+    """Return (api_predict_body, ui_predict_body) for YOLO models.
 
-    YOLO does its own preprocessing (letterbox / normalization), so we just
-    feed it a PIL image and parse the Results object.
+    Uses _yolo_run() which transparently handles both Ultralytics (YOLOv8+)
+    and yolov5 backends via a MODEL_BACKEND flag set at load time.
     """
     api_body = textwrap.dedent("""\
         try:
             img_bytes = base64.b64decode(req.image)
             img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            results = model(img, verbose=False)
-            result = results[0]
-            boxes = result.boxes
-            names = result.names
+            rows, names = _yolo_run(img)
             detections = []
-            if boxes is not None and len(boxes) > 0:
-                xyxy = boxes.xyxy.cpu().numpy()
-                conf = boxes.conf.cpu().numpy()
-                cls = boxes.cls.cpu().numpy().astype(int)
-                for box, score, c in zip(xyxy, conf, cls):
-                    label = names.get(int(c), str(c)) if isinstance(names, dict) else str(c)
-                    detections.append({
-                        "class": label,
-                        "confidence": float(score),
-                        "bbox": [float(v) for v in box],
-                    })
+            for box, score, c in rows:
+                label = names.get(int(c), str(c)) if isinstance(names, dict) else str(c)
+                detections.append({
+                    "class": label,
+                    "confidence": float(score),
+                    "bbox": [float(v) for v in box],
+                })
             return {"detections": detections}
         except Exception as exc:
             tb_lines = traceback.format_exc().splitlines()[-10:]
@@ -291,17 +323,11 @@ def _build_yolo_bodies() -> tuple[str, str]:
             if input_image is None:
                 return "No image provided."
             img = input_image.convert("RGB") if input_image.mode != "RGB" else input_image
-            results = model(img, verbose=False)
-            result = results[0]
-            boxes = result.boxes
-            names = result.names
-            if boxes is None or len(boxes) == 0:
+            rows, names = _yolo_run(img)
+            if not rows:
                 return "No objects detected."
-            xyxy = boxes.xyxy.cpu().numpy()
-            conf = boxes.conf.cpu().numpy()
-            cls = boxes.cls.cpu().numpy().astype(int)
             lines = []
-            for box, score, c in zip(xyxy, conf, cls):
+            for box, score, c in rows:
                 label = names.get(int(c), str(c)) if isinstance(names, dict) else str(c)
                 x1, y1, x2, y2 = [float(v) for v in box]
                 lines.append(f"{label}: {score:.3f}  bbox=[{x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f}]")
@@ -599,11 +625,20 @@ def generate_requirements(
     elif framework == "onnx":
         pkgs = ["onnxruntime", "numpy"]
     elif framework == "yolo":
-        # ultralytics pulls torch, opencv-python, pyyaml, matplotlib, etc.
-        # opencv-python imports libxcb (GUI) at runtime and crashes in headless
-        # containers. We declare opencv-python-headless here AND force-reinstall
-        # it as a final Dockerfile step so it overwrites opencv-python's cv2/.
-        pkgs = ["ultralytics", "opencv-python-headless", "Pillow", "numpy"]
+        # ultralytics handles YOLOv8+; yolov5 (community PyPI package) is the
+        # runtime fallback when the .pt is an original YOLOv5 checkpoint that
+        # ultralytics rejects with a TypeError. Both packages share the torch
+        # ecosystem so install cost is mostly torch (single copy).
+        # opencv-python (pulled by both) imports libxcb at runtime and crashes
+        # in headless containers — we install opencv-python-headless here and
+        # force-reinstall it in the Dockerfile to overwrite cv2/.
+        pkgs = [
+            "ultralytics",
+            "yolov5",
+            "opencv-python-headless",
+            "Pillow",
+            "numpy",
+        ]
     else:
         pkgs = ["numpy"]
 
