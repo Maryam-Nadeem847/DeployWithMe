@@ -456,6 +456,37 @@ def test_cloud_predict(body: TestCloudPredictBody) -> JSONResponse:
                 "error": "Space returned a non-JSON response.",
                 "status_code": r.status_code,
                 "body": r.text[:2000],
+                "logs_url": f"{api_url}/logs",
+            },
+        )
+
+    # When an exception bypasses the deployed app's per-route try/except —
+    # e.g. response-serialization failures inside FastAPI itself — the
+    # response body collapses to FastAPI's default {"detail":"Internal Server
+    # Error"}, which gives the user nothing to act on. Detect that exact
+    # shape and replace it with an actionable envelope pointing at the
+    # Space's runtime logs.
+    if (
+        r.status_code >= 500
+        and isinstance(data, dict)
+        and set(data.keys()) == {"detail"}
+        and str(data.get("detail", "")).strip().lower() == "internal server error"
+    ):
+        return JSONResponse(
+            status_code=r.status_code,
+            content={
+                "error": "The deployed Space crashed without returning a traceback.",
+                "type": "InternalServerError",
+                "status_code": r.status_code,
+                "hint": (
+                    "This usually means the Space was deployed with an older "
+                    "version of the agent that lacks the global exception "
+                    "handler. Re-deploy the same model to pick up the latest "
+                    "agent code, then test again. The new deployment will "
+                    "return the actual Python traceback in this body."
+                ),
+                "logs_url": f"{api_url}/logs",
+                "space_url": api_url,
             },
         )
     return JSONResponse(status_code=r.status_code, content=data)

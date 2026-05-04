@@ -362,6 +362,12 @@ _CLASSIFICATION_HELPER = textwrap.dedent("""\
 
 
 def _segmentation_output_block() -> str:
+    # All values returned to FastAPI are forced through plain Python ints /
+    # str so the response serializer can never trip on numpy scalars (numpy
+    # ints/floats inside a dict cause TypeError in jsonable_encoder on some
+    # numpy versions, which would surface as a generic 500 with the body
+    # {"detail": "Internal Server Error"} — the exact failure mode users
+    # have been hitting on dental-resnet34-unet).
     return textwrap.dedent("""\
         arr_pred = np.asarray(pred)
         if arr_pred.ndim == 4 and arr_pred.shape[0] == 1:
@@ -387,9 +393,9 @@ def _segmentation_output_block() -> str:
         pil_mask.save(buf, format="PNG")
         mask_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         return {
-            "mask_png_base64": mask_b64,
-            "shape": list(mask.shape),
-            "input_size": [height_used, width_used],
+            "mask_png_base64": str(mask_b64),
+            "shape": [int(d) for d in mask.shape],
+            "input_size": [int(height_used), int(width_used)],
         }
         """)
 
@@ -457,13 +463,15 @@ def _build_image_bodies(spec: dict, is_segmentation: bool) -> tuple[str, str]:
     else:
         # Image classification: try the softmax heuristic on the raw output;
         # rich shape if it looks like a probability vector, else raw array.
+        # tolist() yields Python types; we still cast input_size defensively
+        # to dodge a numpy-int leak that would crash JSON serialization.
         output_block = textwrap.dedent("""\
             arr_pred = np.asarray(pred)
             _rich = _shape_classification_output(arr_pred)
             if _rich is not None:
-                _rich["input_size"] = [height_used, width_used]
+                _rich["input_size"] = [int(height_used), int(width_used)]
                 return _rich
-            return {"prediction": arr_pred.tolist(), "input_size": [height_used, width_used]}
+            return {"prediction": arr_pred.tolist(), "input_size": [int(height_used), int(width_used)]}
             """)
 
     api_body = (
@@ -543,9 +551,13 @@ def generate_gradio_app(
     text_invoke_api = pieces["text_invoke_api"]
     text_invoke_ui = pieces["text_invoke_ui"]
 
-    extra_imports = "from typing import List, Optional"
+    # `traceback` is always required by the global exception handler we install
+    # below so that uncaught errors (incl. response-serialization failures
+    # that bypass the per-route try/except) come back with a proper Python
+    # traceback instead of FastAPI's opaque {"detail": "Internal Server Error"}.
+    extra_imports = "from typing import List, Optional\nimport traceback"
     if is_image or is_yolo:
-        extra_imports += "\nimport base64\nimport io\nimport traceback\nfrom PIL import Image"
+        extra_imports += "\nimport base64\nimport io\nfrom PIL import Image"
 
     if is_yolo:
         api_predict_body, ui_predict_body = _build_yolo_bodies()
@@ -743,6 +755,39 @@ def generate_gradio_app(
         + "    allow_methods=[\"*\"],\n"
         + "    allow_headers=[\"*\"],\n"
         + ")\n\n\n"
+        # Catch-all exception handler. The per-route try/except inside
+        # predict_api() cannot catch failures that happen AFTER the route
+        # function returns — most importantly, FastAPI's response
+        # serialization step. When a returned dict contains a value the JSON
+        # encoder can't handle (numpy scalars, NaN/Inf floats, bytes, etc.)
+        # the exception bubbles out of the route and reaches the ASGI layer,
+        # which produces the unhelpful {"detail": "Internal Server Error"}
+        # body that test users keep seeing. This handler intercepts every
+        # unhandled exception app-wide and returns the same rich JSON shape
+        # the per-route handler uses, so the test UI always shows what
+        # actually went wrong.
+        + "from fastapi import Request as _DA_Request\n"
+        + "from starlette.exceptions import HTTPException as _DA_StarletteHTTPException\n\n"
+        + "@app.exception_handler(Exception)\n"
+        + "async def _da_global_exception_handler(request: _DA_Request, exc: Exception):\n"
+        + "    if isinstance(exc, _DA_StarletteHTTPException):\n"
+        + "        return JSONResponse(status_code=exc.status_code, content={\"detail\": exc.detail})\n"
+        + "    tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)\n"
+        + "    tb_lines = [str(line).rstrip() for line in tb_lines][-12:]\n"
+        + "    return JSONResponse(\n"
+        + "        status_code=500,\n"
+        + "        content={\n"
+        + "            \"error\": str(exc) or repr(exc),\n"
+        + "            \"type\": type(exc).__name__,\n"
+        + "            \"path\": str(request.url.path),\n"
+        + "            \"traceback\": tb_lines,\n"
+        + "            \"hint\": (\n"
+        + "                \"This error escaped the per-route try/except — usually a \"\n"
+        + "                \"response-serialization failure (e.g. numpy scalar, NaN/Inf, \"\n"
+        + "                \"or bytes in the returned dict). Check the Space's runtime logs.\"\n"
+        + "            ),\n"
+        + "        },\n"
+        + "    )\n\n\n"
         + "@app.post(\"/predict\", include_in_schema=False)\n"
         + "def predict_api(req: PredictRequest):\n"
         + textwrap.indent(api_predict_body, "    ") + "\n\n"

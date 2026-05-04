@@ -173,11 +173,21 @@ ${schema.inputUI}
 OUTPUT UI:
 ${schema.outputUI}
 
-Error handling:
-- If the response JSON has an "error" key (string), render it prominently in red with the "type" field if present. Do NOT crash.
-- On a non-2xx HTTP status, parse the body as JSON if possible and show the "error" / "type" / "traceback" / "body" fields; otherwise show the raw text.
-- Use feature detection (if ("key" in data)) before reading any field. NEVER assume keys that are not in the RESPONSE SCHEMA above are present.
-- Wrap fetch() in try/catch and show the message text on TypeError (network failure) — do not let an exception bubble up uncaught.
+Error handling — IMPORTANT, follow exactly:
+- After parsing the response body as JSON, ALWAYS render an error block when ANY of these keys are present: "error", "detail", "traceback".
+- Render fields in this order, only when present, each on its own line:
+  * "error" (string) — bold, red, prefixed "Error: "
+  * "type" (string) — prefixed "Type: "
+  * "status_code" (number) — prefixed "Status: "
+  * "hint" (string) — italic, prefixed "Hint: "
+  * "logs_url" (string) — render as a clickable <a target="_blank" rel="noopener"> with the visible text "Open Space logs ↗"
+  * "space_url" (string) — render as a clickable <a target="_blank" rel="noopener"> with the visible text "Open Space ↗"
+  * "traceback" (array of strings) — inside a <details><summary>Show traceback</summary><pre>…</pre></details>
+  * "detail" (string) — only render if "error" is NOT present (FastAPI's default body has only "detail")
+- Always also render a <details><summary>Show raw response</summary><pre>{JSON.stringify(data, null, 2)}</pre></details> at the bottom of the error block so the user can inspect the entire body verbatim.
+- Use feature detection (if ("key" in data)) before reading any field.
+- Wrap fetch() in try/catch. On a thrown TypeError (network failure), render: "Network error: " + err.message. Never let an exception bubble up uncaught.
+- On a successful (2xx) response, render the success UI per the OUTPUT UI section. Do NOT show the error block.
 
 Hard requirements:
 - Fully self-contained: no external CSS, no external JS, no CDNs, no <link>, no <script src=>. All styles and scripts inline. Only built-in browser APIs (fetch, FileReader, etc.).
