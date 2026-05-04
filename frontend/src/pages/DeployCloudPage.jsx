@@ -39,73 +39,147 @@ const IMAGE_TYPES = new Set([
   "Object Detection",
 ]);
 
+// Per-model-type schema descriptors. Each entry must match exactly what the
+// generated app.py in hf_deployer.py emits — keep these in sync.
+//   - request: literal JSON body shape the test UI must POST
+//   - response: literal JSON shape(s) the API may return
+//   - inputUI:  what input control(s) the test UI must render
+//   - outputUI: how to render the response, including dual-shape feature detection
+const MODEL_TYPE_SCHEMAS = {
+  "Image Classification": {
+    request:
+      '{"image": "<base64-encoded image bytes, NO data: prefix>", "size": <int, optional>}',
+    response:
+      'TWO POSSIBLE SHAPES — handle BOTH at runtime via feature detection:\n' +
+      '  RICH (when the model output looks like a probability distribution):\n' +
+      '    {"predicted_class": <int>, "confidence": <float in 0..1>, "all_probabilities": [<float>, ...], "input_size": [H, W]}\n' +
+      '  RAW (otherwise — e.g. logits or class-label outputs):\n' +
+      '    {"prediction": <number array>, "input_size": [H, W]}',
+    inputUI:
+      'Render: a file picker (accept image/*) that converts the chosen file to base64 and STRIPS the "data:image/...;base64," prefix before sending. Plus a numeric "Resize" input defaulting to 224 with a visible warning underneath that reads exactly: "Value must be divisible by 32."',
+    outputUI:
+      'In JS, ALWAYS branch with: if ("predicted_class" in data) { /* rich */ } else if ("prediction" in data) { /* raw */ } else if ("error" in data) { /* error */ }.\n' +
+      'RICH: show "Class: <predicted_class>" as a large headline, confidence as a percentage with 1 decimal (multiply by 100, e.g. 0.874 -> "87.4%"), and a collapsible <details> labeled "All probabilities" listing each index and probability.\n' +
+      'RAW: render the prediction array readably (small <pre> is fine) and show input_size below.\n' +
+      'NEVER assume both shapes coexist in the same response.',
+  },
+  "Object Detection": {
+    request:
+      '{"image": "<base64-encoded image bytes, NO data: prefix>"}  (NO size key — object detection models do their own preprocessing)',
+    response:
+      '{"detections": [{"class": <string>, "confidence": <float in 0..1>, "bbox": [x1, y1, x2, y2]}, ...]}\n' +
+      'Do NOT expect "prediction", "input_size", "predicted_class", or "all_probabilities" keys — they are NOT present for Object Detection.',
+    inputUI:
+      'Render: a file picker (accept image/*) that converts the chosen file to base64 and STRIPS the "data:image/...;base64," prefix before sending. Do NOT include any resize input.',
+    outputUI:
+      'For each detection in data.detections, render a card showing: class name (bold), confidence as a percentage with 1 decimal (multiply by 100), and bbox as "[x1, y1, x2, y2]" with all four numbers rounded to integers.\n' +
+      'If data.detections is an empty array, render the literal text "No objects detected." instead of an empty list.',
+  },
+  "Image Segmentation": {
+    request:
+      '{"image": "<base64-encoded image bytes, NO data: prefix>", "size": <int, optional>}',
+    response:
+      '{"mask_png_base64": "<base64-encoded PNG>", "shape": [<int>, ...], "input_size": [H, W]}',
+    inputUI:
+      'Render: a file picker (accept image/*) that converts the chosen file to base64 and STRIPS the "data:image/...;base64," prefix before sending. Plus a numeric "Resize" input defaulting to 256 with a visible warning underneath that reads exactly: "Value must be divisible by 32."',
+    outputUI:
+      'Render the mask as <img src={"data:image/png;base64," + data.mask_png_base64} style="max-width:100%"> so the user sees the predicted segmentation mask. Below it, show "shape: <data.shape>" and "input_size: <data.input_size>" as plain text.',
+  },
+  "Text Classification": {
+    request: '{"text": "<string>"}',
+    response:
+      'TWO POSSIBLE SHAPES — handle BOTH at runtime:\n' +
+      '  RICH: {"predicted_class": <int>, "confidence": <float in 0..1>, "all_probabilities": [<float>, ...]}\n' +
+      '  RAW:  {"prediction": <value (string|number|array)>}',
+    inputUI:
+      'Render: a <textarea> labeled "Text" + a Submit button. Send {"text": <textarea value>}.',
+    outputUI:
+      'Branch on `if ("predicted_class" in data)`. RICH: show predicted_class + confidence% prominently with collapsible all_probabilities. RAW: show data.prediction (stringify if array).',
+  },
+  "Tabular/Regression": {
+    request: '{"features": [<number>, <number>, ...]}',
+    response:
+      'TWO POSSIBLE SHAPES — handle BOTH at runtime:\n' +
+      '  RICH (sklearn classifier with predict_proba, or DL model with softmax output):\n' +
+      '    {"predicted_class": <int>, "confidence": <float>, "all_probabilities": [<float>, ...]}\n' +
+      '  RAW (sklearn regressor, or sklearn classifier without predict_proba):\n' +
+      '    {"prediction": <value (number|array)>}',
+    inputUI:
+      'Render: a text input for comma-separated floats (placeholder "1.2, 3.4, 5.6") + Submit. Parse to a number array and send {"features": [...]}.',
+    outputUI:
+      'Branch on `if ("predicted_class" in data)`. RICH: show predicted_class + confidence% + collapsible all_probabilities. RAW: show data.prediction (regressor returns scalar/array; classifier-without-proba returns class label).',
+  },
+  "Time Series": {
+    request: '{"sequence": [<number>, <number>, ...]}',
+    response:
+      'TWO POSSIBLE SHAPES — handle BOTH at runtime:\n' +
+      '  RICH: {"predicted_class": <int>, "confidence": <float>, "all_probabilities": [<float>, ...]}\n' +
+      '  RAW:  {"prediction": <value>}',
+    inputUI:
+      'Render: a text input for comma-separated sequence values + Submit. Parse to a number array and send {"sequence": [...]}.',
+    outputUI:
+      'Branch on `if ("predicted_class" in data)`. RICH: predicted_class + confidence% + collapsible all_probabilities. RAW: show data.prediction.',
+  },
+  Other: {
+    request: '{"data": "<string>"}',
+    response:
+      'Schema is unspecified. Treat the response as arbitrary JSON.',
+    inputUI:
+      'Render: a single <textarea> labeled "Data" + Submit button. Send {"data": <textarea value>}.',
+    outputUI:
+      'JSON.stringify the response and display it inside a <pre> block. Make no assumptions about keys.',
+  },
+};
+
+// Same-origin proxy that forwards the test UI's request to the deployed HF
+// Space. The generated UI lives in a sandboxed iframe with a null origin and
+// cannot reliably hit hf.space directly across CORS preflight, so it always
+// goes through this local endpoint instead.
+const TEST_PROXY_URL = "http://localhost:8080/api/test-cloud-predict";
+
 function buildGeminiPrompt({ apiUrl, modelType, modelTypeDesc }) {
-  const isImage = IMAGE_TYPES.has(modelType);
-  const isSegmentation = modelType === "Image Segmentation";
-  const isObjectDetection = modelType === "Object Detection";
-
-  const schemaByType = {
-    "Tabular/Regression": '{"features": [<number>, <number>, ...]}',
-    "Time Series": '{"sequence": [<number>, <number>, ...]}',
-    "Image Classification":
-      '{"image": "<base64-encoded image bytes, no data: prefix>", "size": <int, optional>}',
-    "Image Segmentation":
-      '{"image": "<base64-encoded image bytes, no data: prefix>", "size": <int, optional>}',
-    "Object Detection":
-      '{"image": "<base64-encoded image bytes, no data: prefix>"}',
-    "Text Classification": '{"text": "<string>"}',
-    Other: '{"data": "<string>"}',
-  };
-
-  let responseHint;
-  if (isSegmentation) {
-    responseHint =
-      'The response is JSON: {"mask_png_base64": "<base64 PNG>", "shape": [H, W], "input_size": [H, W]}. Render mask_png_base64 inside an <img src="data:image/png;base64,..."> element so the user sees the predicted segmentation mask. Also display shape and input_size as text alongside the image.';
-  } else if (isObjectDetection) {
-    responseHint =
-      'The response is JSON with EXACTLY this shape: {"detections": [{"class": <string>, "confidence": <float in 0..1>, "bbox": [x1, y1, x2, y2]}, ...]}. ' +
-      'Do NOT expect "prediction" or "input_size" keys — they are not present for Object Detection models. If you see them, you have the wrong schema. ' +
-      'Render each detection as its own card showing: (1) the class name in bold, (2) confidence as a percentage with one decimal (e.g. multiply confidence by 100 and append "%", so 0.874 → "87.4%"), (3) the bounding box as "bbox: [x1, y1, x2, y2]" with the four numbers rounded to integers. ' +
-      'If detections is an empty array, render the text "No objects detected." instead of an empty list. ' +
-      'On error, show the JSON error body.';
-  } else if (isImage) {
-    responseHint =
-      'The response is JSON: {"prediction": <array>, "input_size": [H, W]}. Display the prediction array (formatted readably) and input_size.';
-  } else {
-    responseHint =
-      "The response is JSON. Display the prediction clearly. On error, show the JSON error body.";
-  }
-
-  let imageNotes = "";
-  if (isObjectDetection) {
-    imageNotes =
-      '\nFor the image input: include a file picker that converts the chosen file to base64 (strip the "data:image/...;base64," prefix before sending). Do NOT include a resize input — Object Detection models handle their own preprocessing. Send EXACTLY {"image": <base64>} as the POST body (no "size" key).';
-  } else if (isImage) {
-    imageNotes = `\nFor the image input: include a file picker that converts the chosen file to base64 (strip the "data:image/...;base64," prefix before sending). Include a NUMERIC RESIZE INPUT labeled "Resize" defaulting to ${
-      isSegmentation ? 256 : 224
-    }. Display a visible warning under the resize input that reads exactly: "Value must be divisible by 32." Send {"image": <base64>, "size": <number>} as the POST body.`;
-  }
-
+  const schema = MODEL_TYPE_SCHEMAS[modelType] || MODEL_TYPE_SCHEMAS["Tabular/Regression"];
   const typeDescription =
     modelType === "Other"
       ? `Other — ${(modelTypeDesc || "").trim()}`
       : modelType;
 
-  return `Generate a complete, self-contained, single-file HTML document (with ALL CSS and JavaScript inline) that serves as a test interface for an ML model deployed at: ${apiUrl}
+  return `Generate a complete, self-contained, single-file HTML document (with ALL CSS and JavaScript inline) that serves as a test interface for an ML model deployed on Hugging Face Spaces.
 
 Model type: ${typeDescription}
 
-The page MUST POST to ${apiUrl}/predict with EXACTLY this JSON body shape:
-${schemaByType[modelType] || schemaByType["Tabular/Regression"]}
+REQUEST FLOW — IMPORTANT, READ CAREFULLY:
+This page runs inside a sandboxed iframe with a null origin. It MUST NOT call the Space directly — that fails with "Failed to fetch" because of cross-origin / iframe sandbox restrictions. Instead, EVERY prediction request goes to a same-origin local proxy that forwards the call server-side:
 
-Response handling:
-${responseHint}${imageNotes}
+  POST ${TEST_PROXY_URL}
+  Content-Type: application/json
+  Body: {"api_url": "${apiUrl}", "payload": <MODEL_PAYLOAD>}
+
+…where <MODEL_PAYLOAD> is EXACTLY this JSON shape (this is what the model itself expects):
+${schema.request}
+
+The proxy returns the model's /predict response verbatim with the same status code. On transport failure it returns a JSON envelope: {"error": "<string>", "type": "<string>"} with status 502, or {"error": "...", "status_code": <int>, "body": "..."} when the upstream returned non-JSON.
+
+RESPONSE SCHEMA — what the model returns inside the proxied response body:
+${schema.response}
+
+INPUT UI:
+${schema.inputUI}
+
+OUTPUT UI:
+${schema.outputUI}
+
+Error handling:
+- If the response JSON has an "error" key (string), render it prominently in red with the "type" field if present. Do NOT crash.
+- On a non-2xx HTTP status, parse the body as JSON if possible and show the "error" / "type" / "traceback" / "body" fields; otherwise show the raw text.
+- Use feature detection (if ("key" in data)) before reading any field. NEVER assume keys that are not in the RESPONSE SCHEMA above are present.
+- Wrap fetch() in try/catch and show the message text on TypeError (network failure) — do not let an exception bubble up uncaught.
 
 Hard requirements:
-- Fully self-contained: no external CSS, no external JS, no CDNs, no <link>, no <script src=>.
-- Call ${apiUrl}/predict directly via fetch() POST using the exact JSON body shape above.
-- Show successful predictions and error responses clearly. Mobile-friendly.
-- Output ONLY the raw HTML, starting with <!DOCTYPE html>. No markdown fences, no explanation.`;
+- Fully self-contained: no external CSS, no external JS, no CDNs, no <link>, no <script src=>. All styles and scripts inline. Only built-in browser APIs (fetch, FileReader, etc.).
+- Call ${TEST_PROXY_URL} via fetch() POST with header Content-Type: application/json and body {"api_url": "${apiUrl}", "payload": {...}}. Do NOT call ${apiUrl} or ${apiUrl}/predict directly under any circumstance.
+- Mobile-friendly responsive layout.
+- Output ONLY the raw HTML starting with <!DOCTYPE html>. No markdown fences, no commentary.`;
 }
 
 const GEMINI_PRIMARY_MODEL = "gemini-2.5-flash";

@@ -147,6 +147,14 @@ def _framework_pieces(framework: str, model_filename: str) -> dict:
             "predict_array_helper": (
                 "def _predict_array(X):\n"
                 "    return model.predict(X)\n"
+                "\n"
+                "def _predict_proba(X):\n"
+                "    if hasattr(model, 'predict_proba'):\n"
+                "        try:\n"
+                "            return model.predict_proba(X)\n"
+                "        except Exception:\n"
+                "            return None\n"
+                "    return None\n"
             ),
             "text_invoke_api": "model.predict([req.text])",
             "text_invoke_ui": "model.predict([input_text])",
@@ -164,6 +172,9 @@ def _framework_pieces(framework: str, model_filename: str) -> dict:
                 "    with torch.no_grad():\n"
                 "        out = model(x)\n"
                 "    return out.detach().cpu().numpy()\n"
+                "\n"
+                "def _predict_proba(X):\n"
+                "    return None  # DL models: rely on raw output + softmax heuristic\n"
             ),
             "text_invoke_api": "model([req.text])",
             "text_invoke_ui": "model([input_text])",
@@ -175,6 +186,9 @@ def _framework_pieces(framework: str, model_filename: str) -> dict:
             "predict_array_helper": (
                 "def _predict_array(X):\n"
                 "    return model.predict(X.astype(np.float32), verbose=0)\n"
+                "\n"
+                "def _predict_proba(X):\n"
+                "    return None  # DL models: rely on raw output + softmax heuristic\n"
             ),
             "text_invoke_api": "model.predict([req.text], verbose=0)",
             "text_invoke_ui": "model.predict([input_text], verbose=0)",
@@ -189,6 +203,9 @@ def _framework_pieces(framework: str, model_filename: str) -> dict:
             "predict_array_helper": (
                 "def _predict_array(X):\n"
                 "    return session.run(None, {input_name: X.astype(np.float32)})[0]\n"
+                "\n"
+                "def _predict_proba(X):\n"
+                "    return None  # DL models: rely on raw output + softmax heuristic\n"
             ),
             "text_invoke_api": 'session.run(None, {input_name: np.array([req.text])})[0]',
             "text_invoke_ui": 'session.run(None, {input_name: np.array([input_text])})[0]',
@@ -294,10 +311,54 @@ def _framework_pieces(framework: str, model_filename: str) -> dict:
         "predict_array_helper": (
             "def _predict_array(X):\n"
             "    return model.predict(X)\n"
+            "\n"
+            "def _predict_proba(X):\n"
+            "    if hasattr(model, 'predict_proba'):\n"
+            "        try:\n"
+            "            return model.predict_proba(X)\n"
+            "        except Exception:\n"
+            "            return None\n"
+            "    return None\n"
         ),
         "text_invoke_api": "model.predict([req.text])",
         "text_invoke_ui": "model.predict([input_text])",
     }
+
+
+_CLASSIFICATION_HELPER = textwrap.dedent("""\
+    def _shape_classification_output(arr_like):
+        \"\"\"Apply a softmax-distribution heuristic to a model output and,
+        if it looks like a probability vector, return the rich classification
+        shape; otherwise return None so the caller can fall back to a raw
+        {prediction: ...} response.
+
+        Heuristic: after np.squeeze, the array must be 1-D with length >= 2,
+        all values in [0, 1], and sum within 1e-3 of 1.0. This catches
+        sklearn predict_proba output and DL outputs where softmax was applied
+        in the network's final layer; it correctly skips raw logits, scalar
+        regressor outputs, and class-label outputs from sklearn.predict.
+        \"\"\"
+        try:
+            arr = np.squeeze(np.asarray(arr_like))
+        except Exception:
+            return None
+        if arr.ndim != 1 or arr.shape[0] < 2:
+            return None
+        try:
+            mn = float(arr.min())
+            mx = float(arr.max())
+            sm = float(arr.sum())
+        except Exception:
+            return None
+        if mn < 0.0 or mx > 1.0 or abs(sm - 1.0) > 1e-3:
+            return None
+        pc = int(np.argmax(arr))
+        return {
+            "predicted_class": pc,
+            "confidence": float(arr[pc]),
+            "all_probabilities": arr.tolist(),
+        }
+    """)
 
 
 def _segmentation_output_block() -> str:
@@ -394,8 +455,14 @@ def _build_image_bodies(spec: dict, is_segmentation: bool) -> tuple[str, str]:
     if is_segmentation:
         output_block = _segmentation_output_block()
     else:
+        # Image classification: try the softmax heuristic on the raw output;
+        # rich shape if it looks like a probability vector, else raw array.
         output_block = textwrap.dedent("""\
             arr_pred = np.asarray(pred)
+            _rich = _shape_classification_output(arr_pred)
+            if _rich is not None:
+                _rich["input_size"] = [height_used, width_used]
+                return _rich
             return {"prediction": arr_pred.tolist(), "input_size": [height_used, width_used]}
             """)
 
@@ -507,7 +574,15 @@ def generate_gradio_app(
             "    text: str\n"
         )
         api_predict_body = (
+            "_proba = _predict_proba([req.text])\n"
+            "if _proba is not None:\n"
+            "    _rich = _shape_classification_output(_proba)\n"
+            "    if _rich is not None:\n"
+            "        return _rich\n"
             f"pred = {text_invoke_api}\n"
+            "_rich = _shape_classification_output(pred)\n"
+            "if _rich is not None:\n"
+            "    return _rich\n"
             "return {\"prediction\": pred.tolist() if hasattr(pred, \"tolist\") else (list(pred) if hasattr(pred, \"__iter__\") else pred)}\n"
         )
         ui_input_widget = 'gr.Textbox(placeholder="Enter text…", label="Text")'
@@ -523,7 +598,15 @@ def generate_gradio_app(
         )
         api_predict_body = (
             "X = np.asarray([req.sequence])\n"
+            "_proba = _predict_proba(X)\n"
+            "if _proba is not None:\n"
+            "    _rich = _shape_classification_output(_proba)\n"
+            "    if _rich is not None:\n"
+            "        return _rich\n"
             "pred = _predict_array(X)\n"
+            "_rich = _shape_classification_output(pred)\n"
+            "if _rich is not None:\n"
+            "    return _rich\n"
             "return {\"prediction\": pred.tolist() if hasattr(pred, \"tolist\") else pred}\n"
         )
         ui_input_widget = 'gr.Textbox(placeholder="1.0, 2.1, 3.2, …", label="Sequence (comma-separated)")'
@@ -567,7 +650,15 @@ def generate_gradio_app(
         )
         api_predict_body = (
             "X = np.asarray([req.features])\n"
+            "_proba = _predict_proba(X)\n"
+            "if _proba is not None:\n"
+            "    _rich = _shape_classification_output(_proba)\n"
+            "    if _rich is not None:\n"
+            "        return _rich\n"
             "pred = _predict_array(X)\n"
+            "_rich = _shape_classification_output(pred)\n"
+            "if _rich is not None:\n"
+            "    return _rich\n"
             "return {\"prediction\": pred.tolist() if hasattr(pred, \"tolist\") else pred}\n"
         )
         ui_input_widget = 'gr.Textbox(placeholder="1.2, 3.4, 5.6", label="Features (comma-separated)")'
@@ -612,6 +703,17 @@ def generate_gradio_app(
         "# ----------------------------------------------------------------------\n"
     )
 
+    # The classification heuristic is needed for image classification, text,
+    # tabular, and time series — every path that may emit the rich shape.
+    # YOLO / segmentation / Other do not use it.
+    needs_classify_helper = (
+        (is_image and not is_segmentation and not is_yolo)
+        or is_text
+        or is_timeseries
+        or (not is_image and not is_text and not is_timeseries and not is_other)
+    )
+    classification_helper = _CLASSIFICATION_HELPER if needs_classify_helper else ""
+
     return (
         gradio_client_schema_patch + "\n"
         + framework_imports + "\n"
@@ -624,6 +726,7 @@ def generate_gradio_app(
         + "from pydantic import BaseModel\n\n"
         + load_code + "\n\n\n"
         + predict_array_helper + "\n"
+        + classification_helper
         + schema_class + "\n\n"
         + "def predict_ui(" + ui_input_param + "):\n"
         + textwrap.indent(ui_predict_body, "    ") + "\n\n"

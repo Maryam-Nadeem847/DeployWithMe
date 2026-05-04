@@ -45,6 +45,10 @@ app.add_middleware(
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:5175",
+        # Sandboxed iframes used by the cloud test UI (srcDoc + sandbox without
+        # allow-same-origin) report Origin: null. Whitelist that explicitly so
+        # the test UI's fetch() to /api/test-cloud-predict succeeds.
+        "null",
     ],
     allow_methods=["*"],
     allow_headers=["*"],
@@ -112,6 +116,19 @@ class ConfirmBody(BaseModel):
 
 class TestPredictBody(BaseModel):
     features: list[float]
+
+
+class TestCloudPredictBody(BaseModel):
+    """Body for the cloud-predict proxy used by the auto-generated test UI."""
+
+    api_url: str = Field(..., description="Base URL of the deployed HF Space, e.g. https://user-name.hf.space")
+    payload: dict[str, Any] = Field(..., description="JSON body to forward verbatim to <api_url>/predict")
+
+
+# HF Spaces endpoints follow https://<username>-<spacename>.hf.space; restrict
+# the proxy to that host so this endpoint cannot be abused as an SSRF gadget
+# against arbitrary URLs on the local network.
+_HF_SPACE_API_URL_RE = re.compile(r"^https://[A-Za-z0-9._-]+\.hf\.space$")
 
 
 def _deployment_worker(job_id: str, model_path: str, requirements_path: str | None) -> None:
@@ -368,6 +385,56 @@ def test_predict(port: int, body: TestPredictBody) -> Any:
         return r.json()
     except Exception:
         return {"raw": r.text, "status_code": r.status_code}
+
+
+@app.post("/api/test-cloud-predict")
+def test_cloud_predict(body: TestCloudPredictBody) -> JSONResponse:
+    """Same-origin proxy for the auto-generated cloud test UI.
+
+    The Gemini-generated test interface lives inside a sandboxed iframe
+    (srcDoc + ``sandbox="allow-scripts allow-forms"``) which gives it a
+    *null* origin. Cross-origin fetches from a null origin to a deployed
+    HF Space hit two practical brick walls: HF's edge proxy occasionally
+    drops CORS preflight responses, and several browsers refuse to honour
+    ``Access-Control-Allow-Origin: *`` for null-origin requests when the
+    response also carries credentials-like cookies. Routing through this
+    same-origin endpoint sidesteps both: the iframe talks to localhost
+    (whose CORS we control), and we make a server-to-server call to HF
+    where CORS does not apply.
+    """
+    api_url = body.api_url.strip().rstrip("/")
+    if not _HF_SPACE_API_URL_RE.match(api_url):
+        raise HTTPException(
+            status_code=400,
+            detail="api_url must be a Hugging Face Space URL (https://<owner>-<space>.hf.space).",
+        )
+
+    target = f"{api_url}/predict"
+    try:
+        # HF Spaces can stall the first request after a build for ~30s while
+        # the container warms up; budget generously.
+        r = requests.post(target, json=body.payload, timeout=180)
+    except requests.RequestException as e:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": f"Could not reach the deployed Space: {e}",
+                "type": type(e).__name__,
+            },
+        )
+
+    try:
+        data = r.json()
+    except ValueError:
+        return JSONResponse(
+            status_code=502 if r.ok else r.status_code,
+            content={
+                "error": "Space returned a non-JSON response.",
+                "status_code": r.status_code,
+                "body": r.text[:2000],
+            },
+        )
+    return JSONResponse(status_code=r.status_code, content=data)
 
 
 # ── HuggingFace Spaces cloud deployment endpoints ─────────────────────
