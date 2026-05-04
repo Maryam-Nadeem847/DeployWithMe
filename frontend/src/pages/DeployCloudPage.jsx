@@ -131,11 +131,15 @@ const MODEL_TYPE_SCHEMAS = {
   },
 };
 
-// Same-origin proxy that forwards the test UI's request to the deployed HF
-// Space. The generated UI lives in a sandboxed iframe with a null origin and
-// cannot reliably hit hf.space directly across CORS preflight, so it always
-// goes through this local endpoint instead.
-const TEST_PROXY_URL = "http://localhost:8080/api/test-cloud-predict";
+// The local backend (port 8080) hosts both the prediction proxy and the
+// rendered iframe. Because the iframe is loaded from this same origin, its
+// fetch() to /api/test-cloud-predict is a same-origin request — no CORS
+// preflight, no null-origin handling, no browser quirks. We therefore use a
+// RELATIVE URL inside the generated HTML so it resolves against whichever
+// host the iframe was loaded from.
+const BACKEND_BASE_URL = "http://localhost:8080";
+const TEST_PROXY_PATH = "/api/test-cloud-predict";
+const TEST_UI_STORE_URL = `${BACKEND_BASE_URL}/api/test-ui/store`;
 
 function buildGeminiPrompt({ apiUrl, modelType, modelTypeDesc }) {
   const schema = MODEL_TYPE_SCHEMAS[modelType] || MODEL_TYPE_SCHEMAS["Tabular/Regression"];
@@ -149,9 +153,9 @@ function buildGeminiPrompt({ apiUrl, modelType, modelTypeDesc }) {
 Model type: ${typeDescription}
 
 REQUEST FLOW — IMPORTANT, READ CAREFULLY:
-This page runs inside a sandboxed iframe with a null origin. It MUST NOT call the Space directly — that fails with "Failed to fetch" because of cross-origin / iframe sandbox restrictions. Instead, EVERY prediction request goes to a same-origin local proxy that forwards the call server-side:
+This document is served from the same origin as a local proxy. All prediction calls MUST go to that proxy via the relative URL "${TEST_PROXY_PATH}" — never to hf.space directly. The proxy forwards the call server-side, so cross-origin / CORS issues are completely avoided.
 
-  POST ${TEST_PROXY_URL}
+  POST ${TEST_PROXY_PATH}
   Content-Type: application/json
   Body: {"api_url": "${apiUrl}", "payload": <MODEL_PAYLOAD>}
 
@@ -177,7 +181,9 @@ Error handling:
 
 Hard requirements:
 - Fully self-contained: no external CSS, no external JS, no CDNs, no <link>, no <script src=>. All styles and scripts inline. Only built-in browser APIs (fetch, FileReader, etc.).
-- Call ${TEST_PROXY_URL} via fetch() POST with header Content-Type: application/json and body {"api_url": "${apiUrl}", "payload": {...}}. Do NOT call ${apiUrl} or ${apiUrl}/predict directly under any circumstance.
+- Call the proxy with EXACTLY this fetch invocation pattern:
+    fetch("${TEST_PROXY_PATH}", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ api_url: "${apiUrl}", payload: <MODEL_PAYLOAD> }) })
+  Do NOT call ${apiUrl} or ${apiUrl}/predict directly. Do NOT prepend any host or scheme to "${TEST_PROXY_PATH}".
 - Mobile-friendly responsive layout.
 - Output ONLY the raw HTML starting with <!DOCTYPE html>. No markdown fences, no commentary.`;
 }
@@ -496,7 +502,7 @@ export default function DeployCloudPage() {
   const hydratedRef = useRef(false);
 
   const [generatingTestUI, setGeneratingTestUI] = useState(false);
-  const [generatedTestHTML, setGeneratedTestHTML] = useState("");
+  const [testIframeSrc, setTestIframeSrc] = useState("");
   const [testGenError, setTestGenError] = useState("");
 
   useEffect(() => {
@@ -529,7 +535,7 @@ export default function DeployCloudPage() {
 
   const triggerTestUI = async () => {
     setTestGenError("");
-    setGeneratedTestHTML("");
+    setTestIframeSrc("");
     if (!apiUrl) {
       setTestGenError("No deployed API URL available.");
       return;
@@ -550,7 +556,32 @@ export default function DeployCloudPage() {
     try {
       const prompt = buildGeminiPrompt({ apiUrl, modelType, modelTypeDesc });
       const html = await callGeminiWithFallback(prompt, apiKey);
-      setGeneratedTestHTML(html);
+      // Cache the generated HTML on the local backend and point the iframe
+      // at that backend URL. The iframe and the prediction proxy then share
+      // an origin (localhost:8080), which makes the proxy fetch
+      // same-origin and eliminates every CORS edge case.
+      let storeRes;
+      try {
+        storeRes = await fetch(TEST_UI_STORE_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ html }),
+        });
+      } catch (netErr) {
+        throw new Error(
+          "Could not reach the local API server on http://localhost:8080. Start it with: " +
+            "uvicorn deployment_agent.api_server:app --host 0.0.0.0 --port 8080 --reload"
+        );
+      }
+      if (!storeRes.ok) {
+        const text = await storeRes.text().catch(() => "");
+        throw new Error(
+          `Local backend rejected the test UI (HTTP ${storeRes.status}). ${text}`.trim()
+        );
+      }
+      const storeData = await storeRes.json();
+      // Cache-bust so a regenerated UI never reuses a stale cached frame.
+      setTestIframeSrc(`${BACKEND_BASE_URL}${storeData.render_url}?t=${Date.now()}`);
     } catch (e) {
       setTestGenError(e?.message || String(e));
     } finally {
@@ -876,22 +907,32 @@ export default function DeployCloudPage() {
             <p className="text-sm text-red-600">{testGenError}</p>
           )}
 
-          {generatedTestHTML && (
+          {testIframeSrc && (
             <div className="space-y-3 pt-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-bold text-slate-800">Generated Test Interface</h3>
                 <button
                   type="button"
-                  onClick={() => setGeneratedTestHTML("")}
+                  onClick={() => setTestIframeSrc("")}
                   className="btn-ghost text-xs"
                 >
                   Close
                 </button>
               </div>
+              {/*
+                The iframe is loaded from the local API server (port 8080),
+                which is also where the prediction proxy lives. That makes
+                the iframe's fetch() to /api/test-cloud-predict same-origin —
+                no CORS preflight, no null-origin handling. allow-same-origin
+                is required for the iframe to inherit the backend origin
+                instead of getting an opaque (null) origin from the sandbox.
+                The iframe is on a different origin from this Vite dev page,
+                so the parent's state stays protected by SOP.
+              */}
               <iframe
                 title="Generated Test Interface"
-                srcDoc={generatedTestHTML}
-                sandbox="allow-scripts allow-forms"
+                src={testIframeSrc}
+                sandbox="allow-scripts allow-forms allow-same-origin"
                 className="h-[600px] w-full rounded-xl border border-white/60 bg-white"
               />
             </div>

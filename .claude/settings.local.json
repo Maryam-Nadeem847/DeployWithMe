@@ -17,7 +17,8 @@
       "Bash(npx --yes esbuild src/pages/DeployCloudPage.jsx --loader=jsx --bundle=false)",
       "Bash(npx --yes esbuild src/pages/DeployCloudPage.jsx \"--loader:.jsx=jsx\" --bundle=false)",
       "Bash(node --input-type=module -e ' *)",
-      "Bash(node -e \"require\\('@babel/parser'\\).parse\\(require\\('fs'\\).readFileSync\\('src/pages/DeployCloudPage.jsx','utf8'\\), { sourceType: 'module', plugins: ['jsx'] }\\); console.log\\('OK'\\)\")"
+      "Bash(node -e \"require\\('@babel/parser'\\).parse\\(require\\('fs'\\).readFileSync\\('src/pages/DeployCloudPage.jsx','utf8'\\), { sourceType: 'module', plugins: ['jsx'] }\\); console.log\\('OK'\\)\")",
+      "Bash(node -e \"require\\('@babel/parser'\\).parse\\(require\\('fs'\\).readFileSync\\('src/pages/DeployCloudPage.jsx','utf8'\\), { sourceType: 'module', plugins: ['jsx'] }\\); console.log\\('jsx OK'\\)\")"
     ]
   }
 }

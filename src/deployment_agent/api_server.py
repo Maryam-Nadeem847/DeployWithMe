@@ -24,7 +24,7 @@ from typing import Any
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.formparsers import MultiPartParser
 
@@ -129,6 +129,30 @@ class TestCloudPredictBody(BaseModel):
 # the proxy to that host so this endpoint cannot be abused as an SSRF gadget
 # against arbitrary URLs on the local network.
 _HF_SPACE_API_URL_RE = re.compile(r"^https://[A-Za-z0-9._-]+\.hf\.space$")
+
+
+# In-memory cache for generated test-UI HTML. Loading the iframe via this
+# server's origin (instead of via srcDoc on the Vite dev server) makes the
+# proxy at /api/test-cloud-predict a same-origin fetch from inside the
+# iframe — that bypasses every browser's CORS rules entirely (no preflight,
+# no null-origin handling), which is the only way to make this 100%
+# reliable across browsers.
+_TEST_UI_TTL_SECONDS = 3600
+_test_ui_store: dict[str, dict[str, Any]] = {}
+_test_ui_lock = threading.Lock()
+
+
+def _purge_expired_test_ui_locked() -> None:
+    now = time.time()
+    expired = [k for k, v in _test_ui_store.items() if v["expires_at"] < now]
+    for k in expired:
+        _test_ui_store.pop(k, None)
+
+
+class StoreTestUIBody(BaseModel):
+    """Body for the test-UI cache endpoint."""
+
+    html: str = Field(..., min_length=1, max_length=4_000_000)
 
 
 def _deployment_worker(job_id: str, model_path: str, requirements_path: str | None) -> None:
@@ -435,6 +459,52 @@ def test_cloud_predict(body: TestCloudPredictBody) -> JSONResponse:
             },
         )
     return JSONResponse(status_code=r.status_code, content=data)
+
+
+@app.post("/api/test-ui/store")
+def store_test_ui(body: StoreTestUIBody) -> dict[str, str]:
+    """Cache an auto-generated test-UI HTML doc and return a render URL.
+
+    The frontend points the iframe at the returned URL on this same server
+    (port 8080) instead of inlining the HTML via ``srcDoc`` on the Vite dev
+    server (port 5173). That makes the iframe and the prediction proxy
+    same-origin, so the iframe's fetch() to /api/test-cloud-predict needs
+    no CORS preflight at all and works in every browser. This is the
+    permanent fix for the recurring "Failed to fetch" error users hit when
+    testing cloud deployments.
+    """
+    test_id = uuid.uuid4().hex[:16]
+    with _test_ui_lock:
+        _purge_expired_test_ui_locked()
+        _test_ui_store[test_id] = {
+            "html": body.html,
+            "expires_at": time.time() + _TEST_UI_TTL_SECONDS,
+        }
+    return {"test_id": test_id, "render_url": f"/api/test-ui/render/{test_id}"}
+
+
+@app.get("/api/test-ui/render/{test_id}")
+def render_test_ui(test_id: str) -> HTMLResponse:
+    """Serve cached test-UI HTML so the iframe loads from this server's origin."""
+    with _test_ui_lock:
+        _purge_expired_test_ui_locked()
+        entry = _test_ui_store.get(test_id)
+    if not entry:
+        return HTMLResponse(
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<title>Expired</title></head>"
+            "<body style='font-family:system-ui,sans-serif;padding:32px;color:#334155'>"
+            "<h2>Test UI not found or expired.</h2>"
+            "<p>Click <strong>Test Deployment</strong> again to regenerate.</p>"
+            "</body></html>",
+            status_code=404,
+        )
+    # Serve as text/html with no caching so successive Test Deployment clicks
+    # always show the latest generated UI.
+    return HTMLResponse(
+        entry["html"],
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 # ── HuggingFace Spaces cloud deployment endpoints ─────────────────────
